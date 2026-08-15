@@ -330,7 +330,28 @@ Deux fichiers qui ne nous appartiennent pas sont touchés — ils ne peuvent pas
 | Fichier | Modification | Retrait |
 |---|---|---|
 | `/etc/nftables.conf` | Ajout d'une ligne `include "/etc/nftables/blocker-adulte.nft"` | Étape 7 de la désinstallation (une sauvegarde `.avant-blocker-adulte` est créée) |
+| `/etc/hosts` | **Contenu jamais modifié.** Seul l'attribut d'immuabilité est posé, et seulement si `BLOCKER_LOCK_HOSTS` le permet (voir ci-dessous) | Étape 3 : `sudo chattr -i /etc/hosts` |
 | Service `dnsmasq` de la distribution | Désactivé s'il était actif, pour éviter un conflit sur le port 53 | `sudo systemctl enable --now dnsmasq` |
+
+#### Le cas `/etc/hosts`
+
+Une seule ligne dans `/etc/hosts` contourne **entièrement** le résolveur : la
+résolution système (NSS) lit ce fichier avant d'interroger le DNS, et
+`no-hosts` côté dnsmasq n'y change rien puisque c'est la glibc qui le lit.
+C'est le contournement le plus simple qui existe contre un filtrage DNS.
+
+Le rendre immuable ferme ce trou, mais `/etc/hosts` appartient au système et
+d'autres logiciels l'écrivent légitimement. Réglage dans
+`/etc/blocker-adulte/blocker.conf` :
+
+| `BLOCKER_LOCK_HOSTS` | Comportement |
+|---|---|
+| `auto` *(défaut)* | Verrouille, **sauf** si Docker, podman, LXC, Vagrant ou cloud-init est détecté. L'abstention est écrite dans le journal à chaque passe de self-heal — elle n'est jamais silencieuse. |
+| `oui` | Verrouille toujours. Peut casser Docker et consorts. |
+| `non` | Ne verrouille jamais. Le fichier reste surveillé par auditd (composant 8). |
+
+Le contenu du fichier n'est jamais réécrit : l'outil ne pose et ne retire qu'un
+attribut.
 
 ### Ce qui n'existe nulle part
 
@@ -557,6 +578,11 @@ sudo tests/run_all.sh --tout   # y compris l'arrêt réel des services
 
 Codes de sortie : `0` conforme, `1` échec, `77` test ignoré (prérequis absent).
 
+Les tests savent où ils tournent. Sans systemd en PID 1 (conteneur, chroot,
+image en construction), `test_watchdog_cross_restart.sh` s'ignore proprement et
+les contrôles de service se rabattent sur le processus, au lieu d'échouer à
+tort.
+
 `test_watchdog_cross_restart.sh` arrête réellement des services : le DNS est
 interrompu quelques secondes.
 
@@ -612,9 +638,40 @@ sudo ss -ulpn | grep :53
 Elles sont réelles et assumées : l'outil est un dispositif de friction, pas une
 mesure de sécurité contre un adversaire déterminé disposant du mot de passe root.
 
+### Contournements réellement testés
+
+Le tableau ci-dessous rend compte de tentatives de contournement effectivement
+exécutées contre une installation complète, pas d'une analyse théorique.
+
+| Tentative | Résultat | Pourquoi |
+|---|---|---|
+| Changer `/etc/resolv.conf` vers 9.9.9.9 | **Bloqué** | Le DNAT réécrit la destination quel que soit le serveur configuré |
+| `dig @8.8.8.8`, `@9.9.9.9`, `@208.67.222.222` | **Bloqué** | Toutes les réponses viennent du résolveur local (`version.bind` renvoie `dnsmasq`) |
+| DNS-over-TLS (853) vers Cloudflare, Google, Quad9 | **Bloqué** | Rejet TCP franc |
+| DoH vers `dns.google`, `cloudflare-dns.com`, `quad9` | **Bloqué** | IP d'amorçage refusées + noms filtrés |
+| Enregistrements HTTPS/SVCB (bascule auto vers DoH) | **Bloqué** | `filter-rr=65` |
+| DNS sur ports alternatifs 5353, 5300, 5053, 8053, 1053, 5453 | **Bloqué** *(depuis la correction)* | Ports ajoutés au DNAT, hors réseau local |
+| Ligne ajoutée dans `/etc/hosts` | **Passe**, sauf si `BLOCKER_LOCK_HOSTS` verrouille | NSS lit le fichier avant le DNS |
+| DNS sur un port totalement arbitraire (5555, 9953…) | **Passe** | Seuls les ports DNS connus sont redirigés |
+| DoH vers une IP non listée dans `doh_ipv4` | **Passe** | Indistinguable d'un HTTPS ordinaire |
+| Accès direct par adresse IP, sans DNS | **Passe** | Limite structurelle de tout filtrage DNS |
+
+Les quatre dernières lignes sont les vraies portes de sortie. Elles demandent
+toutes de savoir précisément quoi faire — ce qui est exactement le niveau de
+friction visé : pénible et délibéré, pas impossible.
+
+### Limites structurelles
+
 - **Un accès root suffit.** N'importe laquelle des huit étapes peut être faite à
   la main. C'est voulu — c'est même le critère n°5. La friction vient du nombre
   d'endroits à connaître, pas d'une impossibilité technique.
+- **auditd exige que l'audit soit actif au démarrage.** Sur certaines
+  installations, le sous-système d'audit du noyau démarre désactivé : les 27
+  règles se chargent (`auditctl -l` les liste) mais aucun événement n'est
+  collecté. L'activer demande d'ajouter `audit=1` à la ligne de commande du
+  noyau, donc de modifier GRUB — ce que cet outil ne fera **jamais** (hors
+  périmètre explicite). À faire à la main si le composant 8 vous importe.
+  Vérification : `auditctl -s` doit afficher `enabled 1` et un `pid` non nul.
 - **Un live USB ou un autre système contourne tout.** Rien n'est fait à ce sujet :
   toucher au bootloader ou au firmware est explicitement hors périmètre.
 - **DNS IPv6 en clair est abandonné, pas redirigé.** Le résolveur local n'écoute

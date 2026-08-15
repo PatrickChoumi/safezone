@@ -140,7 +140,8 @@ run systemctl stop blocker-list-update.service
 step "levee de l'immuabilite sur chaque fichier protege"
 note "Sans cette etape, ni apt ni rm ne peuvent supprimer ces fichiers."
 
-PROTEGES="
+# Fichiers que le projet a poses et qui doivent disparaitre.
+A_SUPPRIMER="
 /etc/nftables/blocker-adulte.nft
 /etc/dnsmasq.d/blocker-adulte.conf
 /etc/systemd/resolved.conf.d/blocker-adulte.conf
@@ -151,6 +152,15 @@ PROTEGES="
 /etc/opt/chromium/policies/managed/blocker-adulte.json
 /etc/brave/policies/managed/blocker-adulte.json
 "
+
+# Fichiers a deverrouiller mais qui DOIVENT rester : ils appartiennent au
+# systeme, l'outil n'a fait que poser un attribut d'immuabilite dessus. Les
+# oublier ici laisserait un /etc/hosts non modifiable apres la desinstallation.
+A_DEVERROUILLER_SEULEMENT="
+/etc/hosts
+"
+
+PROTEGES="${A_SUPPRIMER} ${A_DEVERROUILLER_SEULEMENT}"
 
 for f in ${PROTEGES}; do
     if [ -e "${f}" ]; then
@@ -284,8 +294,10 @@ if getent passwd blocker-adulte >/dev/null 2>&1; then
     run deluser --system blocker-adulte
 fi
 
-run rm -f "${OPTOUT_FLAG}"
-run rmdir "${RUNDIR}"
+# Le repertoire d'execution nous appartient entierement : il contient le
+# drapeau de retrait et le fichier PID de dnsmasq. « rmdir » seul echouerait
+# sur ce dernier et laisserait un repertoire fantome.
+run rm -rf "${RUNDIR}"
 
 if [ "${DRY_RUN}" -eq 1 ]; then
     printf '\nMODE SIMULATION termine — rien n a ete modifie.\n'
@@ -303,7 +315,7 @@ verifier_absent() {
     fi
 }
 
-for f in ${PROTEGES} /usr/lib/blocker-adulte /usr/share/blocker-adulte \
+for f in ${A_SUPPRIMER} /usr/lib/blocker-adulte /usr/share/blocker-adulte \
          /usr/share/doc/blocker-adulte /usr/sbin/blocker-uninstall \
          /var/lib/blocker-adulte /etc/blocker-adulte /run/blocker-adulte \
          /etc/initramfs-tools/hooks/blocker-adulte \

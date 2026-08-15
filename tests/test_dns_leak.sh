@@ -9,7 +9,13 @@
 #
 # sudo tests/test_dns_leak.sh
 
-set -uo pipefail
+# Pas de « pipefail » ici, volontairement : ces tests enchainent des
+# « commande | grep -q » de diagnostic. Sous pipefail, grep -q qui sort des la
+# premiere correspondance fait recevoir un SIGPIPE au producteur (nft list,
+# ps aux, journalctl...), et le pipeline renvoie 141 — le controle echouerait
+# alors que la chose cherchee est bien la. Le code de production, lui, garde
+# pipefail et capture ses sorties avant de les filtrer.
+set -u
 . "$(dirname "$0")/lib.sh"
 
 exiger_root
@@ -25,8 +31,7 @@ else
     info "journalctl -u blocker-resolver -n 30"
 fi
 
-verifier "blocker-resolver.service est actif" \
-    systemctl is-active --quiet blocker-resolver.service
+verifier_service blocker-resolver.service dnsmasq
 
 titre "2. systemd-resolved pointe bien sur le resolveur local"
 
@@ -86,14 +91,12 @@ fi
 
 titre "5. Un domaine de la liste de blocage est bien bloque"
 
-# On teste avec un domaine de resolveur DoH present dans la liste de base,
-# plutot qu'avec un domaine adulte : le test doit pouvoir tourner n'importe ou.
-reponse="$(dig +short +time=3 +tries=1 @127.0.0.1 dns.google 2>/dev/null || true)"
-if [ -z "${reponse}" ]; then
-    ok "dns.google est bloque (NXDOMAIN, aucune adresse renvoyee)"
-else
-    ko "dns.google resout vers : ${reponse}"
-    info "la liste de base /var/lib/blocker-adulte/blocklists/00-base.conf est-elle chargee ?"
-fi
+# On teste avec des domaines de resolveur DoH presents dans la liste de base,
+# plutot qu'avec des domaines adultes : le test doit pouvoir tourner n'importe
+# ou, y compris sur une machine de travail partagee.
+for domaine in dns.google cloudflare-dns.com nordvpn.com; do
+    verifier_bloque "${domaine}" || \
+        info "la liste /var/lib/blocker-adulte/blocklists/00-base.conf est-elle chargee ?"
+done
 
 bilan

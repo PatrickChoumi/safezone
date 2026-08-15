@@ -20,7 +20,13 @@
 #
 # sudo tests/test_recovery_mode_hook.sh
 
-set -uo pipefail
+# Pas de « pipefail » ici, volontairement : ces tests enchainent des
+# « commande | grep -q » de diagnostic. Sous pipefail, grep -q qui sort des la
+# premiere correspondance fait recevoir un SIGPIPE au producteur (nft list,
+# ps aux, journalctl...), et le pipeline renvoie 141 — le controle echouerait
+# alors que la chose cherchee est bien la. Le code de production, lui, garde
+# pipefail et capture ses sorties avant de les filtrer.
+set -u
 . "$(dirname "$0")/lib.sh"
 
 exiger_root
@@ -39,7 +45,53 @@ titre "1. Fichiers du hook installes"
 verifier "hook present et executable : ${HOOK}"   test -x "${HOOK}"
 verifier "script de boot present et executable : ${INITB}" test -x "${INITB}"
 
-titre "2. Contenu de l'image initramfs"
+titre "2. Execution du hook dans un DESTDIR temporaire"
+
+# Ce controle exerce la logique du hook sans dependre d'une image initramfs
+# deja construite : il fonctionne donc sur une machine dont /boot est vide
+# (conteneur, chroot, image cloud) comme sur une installation normale.
+BAC="$(mktemp -d)"
+EXTRAIT=""
+# Un seul trap pour les deux repertoires temporaires : un second « trap ... EXIT »
+# remplacerait celui-ci et laisserait le premier repertoire derriere lui.
+trap 'rm -rf "${BAC}" "${EXTRAIT}"' EXIT
+
+if ( export DESTDIR="${BAC}" verbose=n version="$(uname -r)"; \
+     "${HOOK}" >/dev/null 2>&1 ); then
+    ok "le hook s'execute sans erreur"
+else
+    warn "le hook a retourne un code non nul (modules noyau indisponibles ?)"
+    info "les deux controles suivants disent si l'essentiel a malgre tout ete produit."
+fi
+
+if [ -e "${BAC}/usr/sbin/nft" ] || [ -e "${BAC}/sbin/nft" ]; then
+    ok "le hook embarque le binaire nft"
+else
+    ko "le hook n'a pas embarque nft"
+fi
+
+if [ -s "${BAC}/etc/blocker-adulte/base.nft" ]; then
+    ok "le hook genere le jeu de regles de base"
+
+    if nft --check --file "${BAC}/etc/blocker-adulte/base.nft" >/dev/null 2>&1; then
+        ok "le jeu de regles genere est syntaxiquement valide"
+    else
+        ko "le jeu de regles genere est invalide"
+        nft --check --file "${BAC}/etc/blocker-adulte/base.nft" 2>&1 | sed 's/^/        /'
+    fi
+
+    uid_genere="$(grep -oP 'meta skuid \K[0-9]+' "${BAC}/etc/blocker-adulte/base.nft" | head -1)"
+    uid_reel="$(getent passwd blocker-adulte 2>/dev/null | cut -d: -f3)"
+    if [ -n "${uid_genere}" ] && [ "${uid_genere}" = "${uid_reel}" ]; then
+        ok "UID inscrit en dur coherent (${uid_genere})"
+    else
+        ko "UID incoherent : ${uid_genere:-aucun} genere, ${uid_reel:-aucun} reel"
+    fi
+else
+    ko "le hook n'a pas genere etc/blocker-adulte/base.nft"
+fi
+
+titre "3. Contenu de l'image initramfs reellement installee"
 
 exiger_commande lsinitramfs "initramfs-tools"
 
@@ -50,7 +102,7 @@ if [ ! -r "${IMAGE}" ]; then
 fi
 
 if [ -z "${IMAGE}" ] || [ ! -r "${IMAGE}" ]; then
-    warn "image initramfs introuvable pour le noyau $(uname -r), controles 2 a 4 ignores"
+    warn "image initramfs introuvable pour le noyau $(uname -r), controles 4 et 5 ignores"
 else
     info "image inspectee : ${IMAGE}"
     CONTENU="$(lsinitramfs "${IMAGE}" 2>/dev/null || true)"
@@ -80,10 +132,9 @@ else
         warn "nf_tables non trouve dans l'image — il est peut-etre compile en dur dans le noyau"
     fi
 
-    titre "3. Validite du jeu de regles embarque"
+    titre "4. Validite du jeu de regles embarque dans l'image"
 
     EXTRAIT="$(mktemp -d)"
-    trap 'rm -rf "${EXTRAIT}"' EXIT
 
     if command -v unmkinitramfs >/dev/null 2>&1 && \
        unmkinitramfs "${IMAGE}" "${EXTRAIT}" >/dev/null 2>&1; then
@@ -108,7 +159,7 @@ else
                 fi
             done
 
-            titre "4. Coherence de l'UID inscrit en dur"
+            titre "5. Coherence de l'UID inscrit dans l'image"
 
             UID_REGLE="$(grep -oP 'meta skuid \K[0-9]+' "${BASE}" | head -1)"
             UID_REEL="$(getent passwd blocker-adulte 2>/dev/null | cut -d: -f3)"
@@ -123,14 +174,14 @@ else
                 info "Corriger : sudo update-initramfs -u"
             fi
         else
-            warn "base.nft introuvable dans l'image extraite, controles 3 et 4 ignores"
+            warn "base.nft introuvable dans l'image extraite, controles 4 et 5 ignores"
         fi
     else
-        warn "unmkinitramfs indisponible ou extraction en echec, controles 3 et 4 ignores"
+        warn "unmkinitramfs indisponible ou extraction en echec, controles 4 et 5 ignores"
     fi
 fi
 
-titre "5. Regles de base actives sur le systeme en cours"
+titre "6. Regles de base actives sur le systeme en cours"
 
 if nft list table ip blocker_adulte_base_nat >/dev/null 2>&1; then
     ok "la table blocker_adulte_base_nat est chargee (heritee du boot initramfs)"
@@ -143,7 +194,7 @@ else
     info "  nft list table ip blocker_adulte_base_nat"
 fi
 
-titre "6. Le hook ne touche ni au bootloader ni au firmware"
+titre "7. Le hook ne touche ni au bootloader ni au firmware"
 
 # Controle explicite de la ligne rouge du projet. Les commentaires sont exclus
 # de la recherche : le mot « bootloader » y apparait justement pour dire qu'on

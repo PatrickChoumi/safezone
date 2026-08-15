@@ -16,11 +16,25 @@
 #
 # sudo tests/test_watchdog_cross_restart.sh
 
-set -uo pipefail
+# Pas de « pipefail » ici, volontairement : ces tests enchainent des
+# « commande | grep -q » de diagnostic. Sous pipefail, grep -q qui sort des la
+# premiere correspondance fait recevoir un SIGPIPE au producteur (nft list,
+# ps aux, journalctl...), et le pipeline renvoie 141 — le controle echouerait
+# alors que la chose cherchee est bien la. Le code de production, lui, garde
+# pipefail et capture ses sorties avant de les filtrer.
+set -u
 . "$(dirname "$0")/lib.sh"
 
 exiger_root
 exiger_installe
+
+# Ce test pilote reellement des unites systemd : sans systemd en PID 1, il n'a
+# aucun sens. On l'ignore proprement plutot que de le faire echouer a tort.
+if ! systemd_actif; then
+    printf 'systemd n est pas le gestionnaire de services (PID 1). Test ignore.\n' >&2
+    printf 'La surveillance croisee ne peut se verifier que sur une vraie machine.\n' >&2
+    exit "${TEST_SKIP}"
+fi
 
 DELAI_MAX=60
 FLAG=/run/blocker-adulte/uninstall-in-progress

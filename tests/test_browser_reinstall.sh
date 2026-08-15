@@ -13,7 +13,13 @@
 #
 # sudo tests/test_browser_reinstall.sh [--reinstall-reel]
 
-set -uo pipefail
+# Pas de « pipefail » ici, volontairement : ces tests enchainent des
+# « commande | grep -q » de diagnostic. Sous pipefail, grep -q qui sort des la
+# premiere correspondance fait recevoir un SIGPIPE au producteur (nft list,
+# ps aux, journalctl...), et le pipeline renvoie 141 — le controle echouerait
+# alors que la chose cherchee est bien la. Le code de production, lui, garde
+# pipefail et capture ses sorties avant de les filtrer.
+set -u
 . "$(dirname "$0")/lib.sh"
 
 exiger_root
@@ -30,6 +36,21 @@ POLICIES="
 /etc/brave/policies/managed/blocker-adulte.json
 "
 
+# Un navigateur est-il reellement installe ? Cette question decide du mode du
+# test. On ne peut pas la deduire de la presence des fichiers de policy : un
+# deploiement force anterieur (--all) en aurait laisse, sans navigateur derriere.
+un_navigateur_installe() {
+    for c in firefox google-chrome google-chrome-stable chromium chromium-browser brave-browser; do
+        command -v "$c" >/dev/null 2>&1 && return 0
+    done
+    for d in /usr/lib/firefox /snap/firefox /opt/firefox /opt/google/chrome \
+             /usr/lib/chromium /usr/lib/chromium-browser /snap/chromium \
+             /opt/brave.com/brave; do
+        [ -d "$d" ] && return 0
+    done
+    return 1
+}
+
 titre "1. Etat initial des policies"
 
 presentes=""
@@ -42,9 +63,23 @@ for f in ${POLICIES}; do
     fi
 done
 
+# Sur une machine sans navigateur, blocker-apply-policies ne deploie rien : il
+# n'y a rien a proteger. On peut malgre tout exercer toute la mecanique en mode
+# force. Il faut alors etre coherent de bout en bout : forcer la creation puis
+# attendre une restauration par un mecanisme non force testerait une chose qui
+# n'a jamais ete promise, et echouerait a tort.
+MODE_FORCE=0
+
+if un_navigateur_installe; then
+    ok "au moins un navigateur est installe : test en conditions reelles"
+else
+    warn "aucun navigateur installe sur cette machine."
+    info "Le test bascule en mode force (--all) de bout en bout : il valide la"
+    info "mecanique de redeploiement, pas la detection de navigateur."
+    MODE_FORCE=1
+fi
+
 if [ -z "${presentes}" ]; then
-    warn "aucune policy deployee : aucun navigateur detecte."
-    info "Deploiement force pour pouvoir tester quand meme :"
     /usr/lib/blocker-adulte/blocker-apply-policies --all >/dev/null 2>&1 || true
     for f in ${POLICIES}; do
         [ -s "${f}" ] && presentes="${presentes} ${f}"
@@ -54,6 +89,17 @@ if [ -z "${presentes}" ]; then
         exit "${TEST_SKIP}"
     fi
 fi
+
+# Rejoue le mecanisme de reapplication, avec ou sans forcage selon le contexte.
+reappliquer() {
+    if [ "${MODE_FORCE}" -eq 1 ]; then
+        /usr/lib/blocker-adulte/blocker-apply-policies --all >/dev/null 2>&1
+    else
+        systemctl start blocker-selfheal.service >/dev/null 2>&1 || \
+            /usr/lib/blocker-adulte/blocker-selfheal >/dev/null 2>&1
+    fi
+    return 0
+}
 
 titre "2. Les triggers dpkg sont bien enregistres"
 
@@ -91,9 +137,12 @@ ok "policy supprimee (simulation d'une reinstallation de navigateur)"
 # Le composant 7 (self-heal) repasse toutes les 5 minutes, mais on peut
 # declencher la meme passe tout de suite : c'est exactement ce que fera le
 # timer, sans attendre.
-info "declenchement d'une passe de self-heal (equivaut a attendre 5 minutes)"
-systemctl start blocker-selfheal.service >/dev/null 2>&1 || \
-    /usr/lib/blocker-adulte/blocker-selfheal >/dev/null 2>&1 || true
+if [ "${MODE_FORCE}" -eq 1 ]; then
+    info "reapplication via blocker-apply-policies --all (mode force)"
+else
+    info "declenchement d'une passe de self-heal (equivaut a attendre 5 minutes)"
+fi
+reappliquer
 
 sleep 2
 
@@ -123,7 +172,11 @@ titre "5. Le trigger dpkg fonctionne aussi via blocker-apply-policies"
 # Meme chemin de code que celui appele par le postinst en mode « triggered ».
 chattr -i "${cible}" 2>/dev/null || true
 rm -f "${cible}"
-/usr/lib/blocker-adulte/blocker-apply-policies >/dev/null 2>&1 || true
+if [ "${MODE_FORCE}" -eq 1 ]; then
+    /usr/lib/blocker-adulte/blocker-apply-policies --all >/dev/null 2>&1 || true
+else
+    /usr/lib/blocker-adulte/blocker-apply-policies >/dev/null 2>&1 || true
+fi
 
 if [ -s "${cible}" ]; then
     ok "blocker-apply-policies (chemin du trigger dpkg) remet la policy"

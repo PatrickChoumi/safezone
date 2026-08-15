@@ -26,13 +26,20 @@ case "${1:-}" in
 esac
 
 RULES="/etc/blocker-adulte/base.nft"
-NFT="/sbin/nft"
 
 # La sortie de ce script est reprise par le journal du boot ; elle est visible
 # via « journalctl -b -u systemd-journald » ou « dmesg » selon la configuration.
 say() { echo "blocker-adulte (initramfs): $*"; }
 
-[ -x "${NFT}" ] || { say "nft absent de l'initramfs, regles de base non chargees"; exit 0; }
+# L'emplacement de nft depend de la disposition de l'image : usr-merge ou non,
+# selon la version d'initramfs-tools et de la distribution. On cherche aux
+# emplacements possibles plutot que d'en supposer un seul.
+NFT=""
+for candidat in /usr/sbin/nft /sbin/nft /usr/bin/nft /bin/nft; do
+    if [ -x "${candidat}" ]; then NFT="${candidat}"; break; fi
+done
+
+[ -n "${NFT}" ] || { say "nft absent de l'initramfs, regles de base non chargees"; exit 0; }
 [ -r "${RULES}" ] || { say "jeu de regles de base absent, rien a charger"; exit 0; }
 
 # Les modules ont ete embarques par le hook, mais ils ne sont pas forcement

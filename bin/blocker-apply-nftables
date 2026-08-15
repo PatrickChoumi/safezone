@@ -50,12 +50,26 @@ missing_tables() {
 
 # Une table peut exister mais avoir ete videe (« nft flush table »). On verifie
 # donc aussi qu'au moins une regle de redirection DNS est bien presente.
+#
+# Attention : ce script tourne sous « set -o pipefail ». Un « nft list | grep -q »
+# renvoie 141 quand grep sort des la premiere correspondance et que nft, encore
+# en train d'ecrire, prend un SIGPIPE — le controle echouerait alors que la
+# regle est bien la. On capture donc la sortie avant de la filtrer.
+regle_presente() {
+    local table="$1" motif="$2" sortie
+    sortie="$(nft list table ${table} 2>/dev/null)" || return 1
+    case "${sortie}" in
+        *"${motif}"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 redirect_rule_present() {
-    nft list table ip blocker_adulte_nat 2>/dev/null | grep -q 'dport 53'
+    regle_presente "ip blocker_adulte_nat" "dport 53"
 }
 
 doh_rule_present() {
-    nft list table inet blocker_adulte 2>/dev/null | grep -q 'dport 853'
+    regle_presente "inet blocker_adulte" "dport 853"
 }
 
 ruleset_conforme() {

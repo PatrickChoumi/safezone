@@ -16,7 +16,13 @@
 #
 # sudo tests/test_no_hidden_files.sh
 
-set -uo pipefail
+# Pas de « pipefail » ici, volontairement : ces tests enchainent des
+# « commande | grep -q » de diagnostic. Sous pipefail, grep -q qui sort des la
+# premiere correspondance fait recevoir un SIGPIPE au producteur (nft list,
+# ps aux, journalctl...), et le pipeline renvoie 141 — le controle echouerait
+# alors que la chose cherchee est bien la. Le code de production, lui, garde
+# pipefail et capture ses sorties avant de les filtrer.
+set -u
 . "$(dirname "$0")/lib.sh"
 
 exiger_root
@@ -213,7 +219,7 @@ fi
 titre "4. Les processus sont visibles sous leur vrai nom"
 # ---------------------------------------------------------------------------
 
-if systemctl is-active --quiet blocker-resolver.service 2>/dev/null; then
+if pgrep -x dnsmasq >/dev/null 2>&1; then
     if ps aux | grep -v grep | grep -q 'dnsmasq'; then
         ok "le processus dnsmasq apparait dans « ps aux » sous son vrai nom"
         info "$(ps aux | grep -v grep | grep dnsmasq | head -1 | cut -c1-110)"
@@ -235,10 +241,10 @@ if systemctl is-active --quiet blocker-resolver.service 2>/dev/null; then
         fi
     fi
 else
-    warn "blocker-resolver.service inactif, controle des processus ignore"
+    warn "aucun resolveur en cours, controle des processus ignore"
 fi
 
-if systemctl is-active --quiet blocker-guard.service 2>/dev/null; then
+if systemd_actif && systemctl is-active --quiet blocker-guard.service 2>/dev/null; then
     if ps aux | grep -v grep | grep -q 'blocker-guard'; then
         ok "le watchdog apparait dans « ps aux » sous le nom blocker-guard"
     else

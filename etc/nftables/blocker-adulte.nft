@@ -20,6 +20,23 @@
 table ip blocker_adulte_nat
 delete table ip blocker_adulte_nat
 table ip blocker_adulte_nat {
+
+    # Reseaux ou un service DNS legitime peut vivre sans etre un contournement :
+    # boucle locale, reseaux prives (box, resolveur d'entreprise, conteneurs),
+    # lien-local et multicast (mDNS/Bonjour : decouverte d'imprimantes, Chromecast).
+    # Les redirections de ports alternatifs les epargnent.
+    set reseaux_locaux {
+        type ipv4_addr
+        flags interval
+        elements = {
+            10.0.0.0/8,
+            172.16.0.0/12,
+            192.168.0.0/16,
+            169.254.0.0/16,
+            224.0.0.0/4
+        }
+    }
+
     chain output {
         type nat hook output priority dstnat; policy accept;
 
@@ -31,6 +48,16 @@ table ip blocker_adulte_nat {
 
         meta l4proto { tcp, udp } th dport 53 \
             redirect to :53 comment "DNS en clair -> resolveur local"
+
+        # Ports DNS alternatifs. Un resolveur qui ecoute ailleurs que sur le 53
+        # contournerait la regle ci-dessus : dnscrypt-proxy ecoute par defaut sur
+        # 5353, stubby sur 5453, et plusieurs resolveurs publics proposent des
+        # ports de repli. On ne les redirige que vers l'exterieur, pour ne pas
+        # casser le mDNS ni un resolveur du reseau local.
+        ip daddr @reseaux_locaux return
+        meta l4proto { tcp, udp } \
+            th dport { 5053, 5300, 5335, 5353, 5453, 8053, 1053, 15353 } \
+            redirect to :53 comment "ports DNS alternatifs -> resolveur local"
     }
 
     # Meme traitement pour le trafic relaye (partage de connexion, conteneurs,
@@ -41,6 +68,11 @@ table ip blocker_adulte_nat {
         ip daddr 127.0.0.0/8 return
         meta l4proto { tcp, udp } th dport 53 \
             redirect to :53 comment "DNS relaye -> resolveur local"
+
+        ip daddr @reseaux_locaux return
+        meta l4proto { tcp, udp } \
+            th dport { 5053, 5300, 5335, 5353, 5453, 8053, 1053, 15353 } \
+            redirect to :53 comment "ports DNS alternatifs relayes -> resolveur local"
     }
 }
 

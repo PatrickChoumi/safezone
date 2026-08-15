@@ -27,6 +27,7 @@ BLOCKER_UPSTREAM_2="1.0.0.3"
 BLOCKER_LISTEN_ADDR="127.0.0.1"
 BLOCKER_LISTEN_PORT="53"
 BLOCKER_GUARD_INTERVAL="15"           # secondes entre deux passes de watchdog
+BLOCKER_LOCK_HOSTS="auto"             # rendre /etc/hosts immuable : oui/non/auto
 BLOCKER_LIST_URLS="https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
 https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/doh-vpn-proxy-bypass.txt"
 
@@ -107,10 +108,50 @@ blocker_stand_down_if_optout() {
 # Inventaire des fichiers proteges
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Cas particulier de /etc/hosts
+# ---------------------------------------------------------------------------
+#
+# Une seule ligne dans /etc/hosts suffit a contourner entierement le resolveur :
+# la resolution systeme (NSS) lit ce fichier AVANT d'interroger le DNS. C'est le
+# contournement le plus simple qui existe contre un filtrage DNS, et « no-hosts »
+# cote dnsmasq n'y change rien puisque le fichier est lu par la glibc.
+#
+# On peut le rendre immuable, mais c'est le seul fichier protege qui appartient
+# a un autre paquet et que d'autres logiciels reecrivent legitimement :
+# Docker y ajoute ses conteneurs, cloud-init et les outils de virtualisation
+# aussi. Le verrouiller a l'aveugle casserait ces outils de facon opaque.
+#
+# Regle retenue : on verrouille par defaut sur une machine de bureau, et on
+# s'abstient — en le disant dans le journal — des qu'un de ces logiciels est
+# present. Reglable par BLOCKER_LOCK_HOSTS dans /etc/blocker-adulte/blocker.conf
+# (« oui » / « non » / « auto », defaut « auto »).
+blocker_hosts_verrouillable() {
+    case "${BLOCKER_LOCK_HOSTS:-auto}" in
+        non|no|0) return 1 ;;
+        oui|yes|1) return 0 ;;
+    esac
+
+    # Mode « auto » : on s'efface devant les logiciels qui ecrivent /etc/hosts.
+    for gene in /usr/bin/docker /usr/bin/podman /usr/bin/lxc /usr/bin/vagrant; do
+        [ -x "${gene}" ] && return 1
+    done
+    [ -d /var/lib/docker ] && return 1
+    [ -x /usr/bin/cloud-init ] && return 1
+
+    return 0
+}
+
 # Fichiers rendus immuables (chattr +i) par le self-heal.
 # Volontairement limite aux fichiers dont le projet est proprietaire : rendre
 # immuable un fichier appartenant a un autre paquet casserait ses mises a jour.
+#
+# /etc/hosts est un cas a part, traite par blocker_hosts_verrouillable() : il
+# ne nous appartient pas et d'autres logiciels l'ecrivent legitimement.
 blocker_protected_files() {
+    if blocker_hosts_verrouillable; then
+        printf '/etc/hosts\n'
+    fi
     cat <<'EOF'
 /etc/nftables/blocker-adulte.nft
 /etc/dnsmasq.d/blocker-adulte.conf
@@ -156,9 +197,14 @@ blocker_lock_file() {
     local f="$1"
     [ -e "$f" ] || return 0
     command -v chattr >/dev/null 2>&1 || return 0
-    if lsattr -d "$f" 2>/dev/null | awk '{print $1}' | grep -q 'i'; then
-        return 0
-    fi
+    # Sortie capturee plutot que filtree par un pipeline : sous « pipefail »,
+    # un « grep -q » qui sort tot fait echouer tout le pipeline via SIGPIPE.
+    local drapeaux
+    drapeaux="$(lsattr -d "$f" 2>/dev/null)"
+    drapeaux="${drapeaux%% *}"
+    case "${drapeaux}" in
+        *i*) return 0 ;;
+    esac
     if chattr +i "$f" 2>/dev/null; then
         blocker_repair "immuabilite (chattr +i) reappliquee sur $f"
     else

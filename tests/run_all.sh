@@ -8,7 +8,13 @@
 # Codes de sortie : 0 si tout passe, 1 sinon. Un test ignore (77) n'est pas
 # compte comme un echec.
 
-set -uo pipefail
+# Pas de « pipefail » ici, volontairement : ces tests enchainent des
+# « commande | grep -q » de diagnostic. Sous pipefail, grep -q qui sort des la
+# premiere correspondance fait recevoir un SIGPIPE au producteur (nft list,
+# ps aux, journalctl...), et le pipeline renvoie 141 — le controle echouerait
+# alors que la chose cherchee est bien la. Le code de production, lui, garde
+# pipefail et capture ses sorties avant de les filtrer.
+set -u
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 TOUT=0

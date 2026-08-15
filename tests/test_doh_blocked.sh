@@ -9,7 +9,13 @@
 #
 # sudo tests/test_doh_blocked.sh
 
-set -uo pipefail
+# Pas de « pipefail » ici, volontairement : ces tests enchainent des
+# « commande | grep -q » de diagnostic. Sous pipefail, grep -q qui sort des la
+# premiere correspondance fait recevoir un SIGPIPE au producteur (nft list,
+# ps aux, journalctl...), et le pipeline renvoie 141 — le controle echouerait
+# alors que la chose cherchee est bien la. Le code de production, lui, garde
+# pipefail et capture ses sorties avant de les filtrer.
+set -u
 . "$(dirname "$0")/lib.sh"
 
 exiger_root
@@ -76,13 +82,9 @@ fi
 titre "4. Le resolveur local filtre les noms des endpoints DoH"
 
 if command -v dig >/dev/null 2>&1; then
-    for domaine in dns.google cloudflare-dns.com dns.quad9.net mozilla.cloudflare-dns.com; do
-        r="$(dig +short +time=3 +tries=1 @127.0.0.1 "${domaine}" 2>/dev/null || true)"
-        if [ -z "${r}" ]; then
-            ok "${domaine} ne resout pas"
-        else
-            ko "${domaine} resout vers ${r}"
-        fi
+    for domaine in dns.google cloudflare-dns.com dns.quad9.net \
+                   mozilla.cloudflare-dns.com dns.adguard.com; do
+        verifier_bloque "${domaine}"
     done
 else
     warn "dig absent, controle ignore"

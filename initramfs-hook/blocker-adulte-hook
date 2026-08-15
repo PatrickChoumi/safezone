@@ -21,7 +21,9 @@
 # Ce hook ne touche NI au bootloader NI au firmware : il ne fait qu'ajouter des
 # fichiers dans l'image initramfs, regeneree par update-initramfs.
 
-set -e
+# Pas de « set -e » : un hook qui s'interrompt en silence produit une image
+# initramfs incomplete sans que rien ne le signale. Chaque etape verifie son
+# resultat et le dit.
 
 PREREQ=""
 prereqs() { echo "${PREREQ}"; }
@@ -44,24 +46,34 @@ if [ ! -x "${NFT_BIN}" ]; then
 fi
 
 # --- 1. Binaire nft + bibliotheques ----------------------------------------
-copy_exec "${NFT_BIN}" /sbin
+# On passe un chemin de destination COMPLET, pas un repertoire. Avec un
+# repertoire, copy_exec le traite comme le nom du fichier cible quand ce
+# repertoire n'existe pas encore dans l'image : le binaire se retrouve copie
+# sous le nom « sbin ». Sur Ubuntu, /sbin est de plus un lien usr-merge vers
+# /usr/sbin, ce qui rend la forme repertoire doublement ambigue.
+copy_exec "${NFT_BIN}" /usr/sbin/nft
 
-# --- 2. Modules noyau netfilter --------------------------------------------
-# Sans eux, nft echoue dans l'initramfs avec « Operation not supported ».
-for module in \
-    nf_tables \
-    nft_chain_nat \
-    nft_redir \
-    nft_reject \
-    nft_reject_inet \
-    nf_nat \
-    nf_conntrack \
-    nf_defrag_ipv4
-do
-    manual_add_modules "${module}" 2>/dev/null || true
-done
+if [ ! -e "${DESTDIR}/usr/sbin/nft" ]; then
+    echo "blocker-adulte: ECHEC de la copie de nft dans l'initramfs" >&2
+    echo "blocker-adulte: les regles de base ne seront pas chargees au demarrage" >&2
+    exit 0
+fi
 
-# --- 3. Jeu de regles de base ----------------------------------------------
+# Compatibilite : /sbin/nft doit fonctionner meme si l'image n'a pas de lien
+# usr-merge. On cree le lien seulement si /sbin est un vrai repertoire ; s'il
+# est deja un lien vers usr/sbin, il n'y a rien a faire.
+if [ -d "${DESTDIR}/sbin" ] && [ ! -L "${DESTDIR}/sbin" ] && [ ! -e "${DESTDIR}/sbin/nft" ]; then
+    ln -sf ../usr/sbin/nft "${DESTDIR}/sbin/nft" 2>/dev/null || true
+fi
+
+# --- 2. Jeu de regles de base ----------------------------------------------
+# Genere AVANT l'ajout des modules, volontairement. manual_add_modules delegue
+# a dracut-install via une fonction qui dereference « ${version?} » : si cette
+# variable manque, le shell — donc ce hook — se termine sur-le-champ, et un
+# « || true » n'y change rien. En placant la generation des regles avant, un
+# incident cote modules ne peut plus priver l'image du jeu de regles, qui est
+# la partie essentielle (les modules netfilter sont souvent deja integres au
+# noyau Ubuntu).
 # Les regles completes de /etc/nftables/blocker-adulte.nft resolvent
 # « meta skuid "blocker-adulte" » via la base utilisateurs, absente de
 # l'initramfs. On genere donc ici une variante ou l'UID est ecrit en dur, en
@@ -117,5 +129,22 @@ EOF
 chmod 0644 "${DESTDIR}/etc/blocker-adulte/base.nft"
 
 echo "blocker-adulte: regles de base embarquees dans l'initramfs (uid ${BLOCKER_UID})"
+
+# --- 3. Modules noyau netfilter --------------------------------------------
+# Sans eux, nft peut echouer dans l'initramfs avec « Operation not supported ».
+# Sur les noyaux Ubuntu courants, la plupart sont deja integres : c'est pour
+# cette raison que cette etape vient en dernier et n'est pas bloquante.
+for module in \
+    nf_tables \
+    nft_chain_nat \
+    nft_redir \
+    nft_reject \
+    nft_reject_inet \
+    nf_nat \
+    nf_conntrack \
+    nf_defrag_ipv4
+do
+    manual_add_modules "${module}" 2>/dev/null || true
+done
 
 exit 0

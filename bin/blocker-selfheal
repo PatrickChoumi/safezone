@@ -25,6 +25,17 @@ fi
 ecarts=0
 note() { ecarts=$((ecarts + 1)); blocker_repair "$*"; }
 
+# L'abstention sur /etc/hosts ne doit pas etre silencieuse : c'est le
+# contournement le plus simple de tout l'outil, l'utilisateur doit savoir si ce
+# trou est ouvert ou ferme sur sa machine.
+if blocker_hosts_verrouillable; then
+    blocker_info "/etc/hosts : verrouille (immuable)"
+else
+    blocker_warn "/etc/hosts : NON verrouille — une ligne y suffit a contourner le resolveur"
+    blocker_warn "  raison : BLOCKER_LOCK_HOSTS=${BLOCKER_LOCK_HOSTS:-auto} et/ou Docker/podman/LXC/cloud-init detecte"
+    blocker_warn "  les modifications restent tracees par auditd (ausearch -k blocker-adulte)"
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Immuabilite des fichiers proteges
 # ---------------------------------------------------------------------------
