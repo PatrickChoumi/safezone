@@ -1,0 +1,37 @@
+Source: blocker-adulte
+Section: net
+Priority: optional
+Maintainer: blocker-adulte <root@localhost>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: blocker-adulte
+Architecture: all
+Depends: ${misc:Depends},
+         dnsmasq-base,
+         nftables,
+         systemd,
+         curl,
+         e2fsprogs
+Recommends: systemd-resolved,
+            auditd,
+            initramfs-tools,
+            network-manager,
+            dnsutils
+Description: Blocage de contenu adulte, persistant et distribue
+ Outil auto-heberge de blocage de contenu adulte pour une machine Ubuntu
+ personnelle, concu pour resister a une desactivation impulsive par la
+ redondance plutot que par la dissimulation.
+ .
+ Huit composants independants, chacun capable de retablir les autres :
+ resolveur DNS local (dnsmasq), redirection nftables du trafic DNS,
+ policies deployees dans chaque navigateur installe, hook initramfs,
+ triggers dpkg, deux services systemd a surveillance croisee, timer de
+ self-heal, et journalisation auditd des modifications.
+ .
+ Rien n'est masque : aucun processus, fichier ou entree dpkg n'est cache,
+ tous les emplacements d'installation sont documentes dans le README, et
+ chaque reparation automatique est journalisee dans journalctl. La
+ desinstallation complete est documentee etape par etape et automatisee par
+ « blocker-uninstall --confirm ».

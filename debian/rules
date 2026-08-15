@@ -1,0 +1,23 @@
+#!/usr/bin/make -f
+# blocker-adulte — regles de construction du paquet .deb
+#
+# Le placement des fichiers est entierement delegue au Makefile de la racine :
+# le paquet et install.sh posent donc rigoureusement la meme arborescence.
+
+export DH_VERBOSE = 1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	# Rien a compiler : le projet est constitue de scripts shell et de JSON.
+	$(MAKE) check
+
+override_dh_auto_install:
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/blocker-adulte
+
+# Les unites sont activees et demarrees par blocker-configure, dans un ordre
+# precis (resolveur puis garde). On laisse donc dh_installsystemd installer les
+# unites sans les activer lui-meme, pour ne pas dedoubler cette logique.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start

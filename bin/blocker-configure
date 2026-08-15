@@ -1,0 +1,175 @@
+#!/bin/bash
+# blocker-adulte — configuration post-installation, idempotente
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-configure
+#
+# Point d'entree unique appele par install.sh ET par le postinst du paquet .deb,
+# pour que les deux voies d'installation produisent exactement le meme etat.
+#
+# Chaque etape est independante et rejouable : relancer ce script sur un systeme
+# deja configure ne change rien et ne casse rien.
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+
+step() { blocker_info "== $* =="; }
+
+# ---------------------------------------------------------------------------
+# 0. Utilisateur systeme
+# ---------------------------------------------------------------------------
+step "utilisateur systeme ${BLOCKER_USER}"
+if ! getent passwd "${BLOCKER_USER}" >/dev/null 2>&1; then
+    adduser --system --group --no-create-home \
+            --home /nonexistent --quiet "${BLOCKER_USER}"
+    blocker_info "utilisateur systeme ${BLOCKER_USER} cree"
+fi
+
+install -d -m 0755 "${BLOCKER_STATEDIR}"
+install -d -m 0755 "${BLOCKER_STATEDIR}/blocklists"
+install -d -m 0755 "${BLOCKER_CONFDIR}"
+install -d -m 0755 -o "${BLOCKER_USER}" -g "${BLOCKER_USER}" "${BLOCKER_RUNDIR}"
+
+# Le drapeau de retrait volontaire ne doit pas survivre a une reinstallation.
+rm -f "${BLOCKER_OPTOUT_FLAG}"
+
+# Configuration locale : posee une seule fois, jamais ecrasee ensuite, pour ne
+# pas perdre les reglages de l'utilisateur a chaque mise a jour.
+if [ ! -e "${BLOCKER_CONF}" ]; then
+    install -m 0644 "${BLOCKER_SHAREDIR}/conf/blocker.conf" "${BLOCKER_CONF}"
+    blocker_info "configuration locale installee : ${BLOCKER_CONF}"
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Liste de blocage de base
+# ---------------------------------------------------------------------------
+step "liste de blocage"
+if [ ! -s "${BLOCKER_STATEDIR}/blocklists/00-base.conf" ]; then
+    install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/00-base.conf" \
+                    "${BLOCKER_STATEDIR}/blocklists/00-base.conf"
+    blocker_info "liste de blocage de base installee (fonctionne hors ligne)"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Fichiers de configuration proteges
+# ---------------------------------------------------------------------------
+step "fichiers de configuration"
+blocker_install_protected "${BLOCKER_SHAREDIR}/conf/dnsmasq-blocker-adulte.conf" \
+                          "/etc/dnsmasq.d/blocker-adulte.conf"
+blocker_install_protected "${BLOCKER_SHAREDIR}/conf/nftables-blocker-adulte.nft" \
+                          "/etc/nftables/blocker-adulte.nft"
+blocker_install_protected "${BLOCKER_SHAREDIR}/conf/resolved-blocker-adulte.conf" \
+                          "/etc/systemd/resolved.conf.d/blocker-adulte.conf"
+blocker_install_protected "${BLOCKER_SHAREDIR}/conf/90-blocker-adulte" \
+                          "/etc/NetworkManager/dispatcher.d/90-blocker-adulte" 0755
+
+# ---------------------------------------------------------------------------
+# 3. Inclusion dans /etc/nftables.conf (persistance au boot)
+# ---------------------------------------------------------------------------
+step "persistance nftables"
+NFT_MAIN="/etc/nftables.conf"
+NFT_INCLUDE='include "/etc/nftables/blocker-adulte.nft"'
+
+if [ ! -e "${NFT_MAIN}" ]; then
+    cat > "${NFT_MAIN}" <<'EOF'
+#!/usr/sbin/nft -f
+# Fichier cree par blocker-adulte (install.sh). Il ne contient volontairement
+# pas de « flush ruleset » afin de ne pas effacer d'autres regles de pare-feu.
+EOF
+    chmod 0755 "${NFT_MAIN}"
+    blocker_info "${NFT_MAIN} cree"
+fi
+
+if ! grep -qF 'blocker-adulte.nft' "${NFT_MAIN}"; then
+    printf '\n# blocker-adulte (composant 2) — retirer cette ligne lors de la desinstallation\n%s\n' \
+        "${NFT_INCLUDE}" >> "${NFT_MAIN}"
+    blocker_info "ligne d'inclusion ajoutee a ${NFT_MAIN}"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Policies navigateur
+# ---------------------------------------------------------------------------
+step "policies navigateur"
+/usr/lib/blocker-adulte/blocker-apply-policies || \
+    blocker_warn "deploiement des policies partiellement en echec"
+
+# ---------------------------------------------------------------------------
+# 5. Regles auditd
+# ---------------------------------------------------------------------------
+step "regles auditd"
+if [ -d /etc/audit/rules.d ]; then
+    install -m 0640 "${BLOCKER_SHAREDIR}/conf/audit-blocker-adulte.rules" \
+                    /etc/audit/rules.d/blocker-adulte.rules
+    if command -v augenrules >/dev/null 2>&1; then
+        augenrules --load >/dev/null 2>&1 || \
+            blocker_warn "augenrules --load a echoue (auditd est-il demarre ?)"
+    fi
+    blocker_info "regles auditd installees dans /etc/audit/rules.d/blocker-adulte.rules"
+else
+    blocker_warn "auditd absent : composant 8 inactif. Installer le paquet auditd puis relancer ce script."
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Hook initramfs
+# ---------------------------------------------------------------------------
+step "hook initramfs"
+if [ -d /etc/initramfs-tools ]; then
+    install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/blocker-adulte-hook" \
+                    /etc/initramfs-tools/hooks/blocker-adulte
+    install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/blocker-adulte-init-bottom" \
+                    /etc/initramfs-tools/scripts/init-bottom/blocker-adulte
+    if command -v update-initramfs >/dev/null 2>&1; then
+        blocker_info "regeneration de l'initramfs (update-initramfs -u)"
+        update-initramfs -u >/dev/null 2>&1 || \
+            blocker_warn "update-initramfs -u a echoue ; relancer a la main"
+    fi
+else
+    blocker_warn "initramfs-tools absent : composant 4 inactif"
+fi
+
+# ---------------------------------------------------------------------------
+# 7. systemd-resolved
+# ---------------------------------------------------------------------------
+step "systemd-resolved"
+if systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1; then
+    systemctl enable --now systemd-resolved.service >/dev/null 2>&1 || true
+    systemctl restart systemd-resolved.service || \
+        blocker_warn "redemarrage de systemd-resolved en echec"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. Unites systemd du projet
+# ---------------------------------------------------------------------------
+step "unites systemd"
+systemctl daemon-reload
+
+# nftables.service assure le chargement au boot, tot dans la sequence.
+if systemctl list-unit-files nftables.service >/dev/null 2>&1; then
+    systemctl enable nftables.service >/dev/null 2>&1 || true
+fi
+
+# Ordre volontaire : le resolveur d'abord, la garde ensuite.
+systemctl enable --now blocker-resolver.service || \
+    blocker_err "blocker-resolver.service n'a pas demarre — voir journalctl -u blocker-resolver"
+systemctl enable --now blocker-guard.service || \
+    blocker_err "blocker-guard.service n'a pas demarre — voir journalctl -u blocker-guard"
+systemctl enable --now blocker-selfheal.timer || \
+    blocker_warn "blocker-selfheal.timer non arme"
+systemctl enable --now blocker-list-update.timer || \
+    blocker_warn "blocker-list-update.timer non arme"
+
+# ---------------------------------------------------------------------------
+# 9. Regles nftables et immuabilite
+# ---------------------------------------------------------------------------
+step "regles nftables"
+/usr/lib/blocker-adulte/blocker-apply-nftables --force || \
+    blocker_err "chargement des regles nftables en echec"
+
+step "immuabilite des fichiers proteges"
+blocker_lock_all
+
+blocker_info "configuration terminee. Etat : systemctl status blocker-guard blocker-resolver"
+blocker_info "desinstallation : /usr/sbin/blocker-uninstall --confirm (voir README)"
+exit 0

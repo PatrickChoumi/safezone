@@ -1,0 +1,107 @@
+#!/bin/bash
+# blocker-adulte — chargement et verification des regles nftables (composant 2)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-apply-nftables
+#
+# Usage :
+#   blocker-apply-nftables            charge les regles si elles manquent
+#   blocker-apply-nftables --force    recharge inconditionnellement
+#   blocker-apply-nftables --check    ne charge rien, code retour 0 si conforme
+#
+# Appele par : install.sh, le postinst, blocker-guard, blocker-selfheal et le
+# dispatcher NetworkManager.
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+RULES_FILE="/etc/nftables/blocker-adulte.nft"
+
+MODE="ensure"
+case "${1:-}" in
+    --force) MODE="force" ;;
+    --check) MODE="check" ;;
+    "")      MODE="ensure" ;;
+    *)       blocker_err "argument inconnu : $1"; exit 2 ;;
+esac
+
+if ! command -v nft >/dev/null 2>&1; then
+    blocker_err "nft introuvable : installer le paquet nftables"
+    exit 1
+fi
+
+# Les trois tables que ce projet doit voir chargees.
+expected_tables() {
+    printf '%s\n' \
+        "ip blocker_adulte_nat" \
+        "ip6 blocker_adulte_nat" \
+        "inet blocker_adulte"
+}
+
+missing_tables() {
+    local family name
+    while read -r family name; do
+        if ! nft list table "${family}" "${name}" >/dev/null 2>&1; then
+            printf '%s %s\n' "${family}" "${name}"
+        fi
+    done < <(expected_tables)
+    return 0
+}
+
+# Une table peut exister mais avoir ete videe (« nft flush table »). On verifie
+# donc aussi qu'au moins une regle de redirection DNS est bien presente.
+redirect_rule_present() {
+    nft list table ip blocker_adulte_nat 2>/dev/null | grep -q 'dport 53'
+}
+
+doh_rule_present() {
+    nft list table inet blocker_adulte 2>/dev/null | grep -q 'dport 853'
+}
+
+ruleset_conforme() {
+    [ -z "$(missing_tables)" ] && redirect_rule_present && doh_rule_present
+}
+
+if [ "${MODE}" = "check" ]; then
+    if ruleset_conforme; then
+        exit 0
+    fi
+    missing="$(missing_tables | tr '\n' ',' | sed 's/,$//')"
+    blocker_warn "regles nftables non conformes (tables manquantes ou videes : ${missing:-aucune, chaines vides})"
+    exit 1
+fi
+
+if [ "${MODE}" = "ensure" ] && ruleset_conforme; then
+    exit 0
+fi
+
+if [ ! -r "${RULES_FILE}" ]; then
+    blocker_err "jeu de regles introuvable : ${RULES_FILE}"
+    exit 1
+fi
+
+# L'utilisateur systeme doit exister avant le chargement : le jeu de regles
+# resout « meta skuid \"blocker-adulte\" » a la lecture du fichier.
+if ! getent passwd "${BLOCKER_USER}" >/dev/null 2>&1; then
+    blocker_err "utilisateur systeme ${BLOCKER_USER} absent, chargement impossible"
+    exit 1
+fi
+
+if [ "${MODE}" = "force" ]; then
+    blocker_info "rechargement force des regles nftables depuis ${RULES_FILE}"
+else
+    blocker_repair "regles nftables absentes ou incompletes, rechargement depuis ${RULES_FILE}"
+fi
+
+if ! nft -f "${RULES_FILE}"; then
+    blocker_err "echec du chargement de ${RULES_FILE}"
+    exit 1
+fi
+
+if ruleset_conforme; then
+    blocker_info "regles nftables actives (ip/ip6 blocker_adulte_nat, inet blocker_adulte)"
+    exit 0
+fi
+
+blocker_err "regles chargees mais toujours non conformes — verifier ${RULES_FILE} a la main"
+exit 1

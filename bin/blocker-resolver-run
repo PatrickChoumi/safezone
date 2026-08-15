@@ -1,0 +1,103 @@
+#!/bin/bash
+# blocker-adulte — superviseur du resolveur DNS local (composants 1 et 6)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-resolver-run
+# Lance par     : blocker-resolver.service
+#
+# Ce script :
+#   1. lance dnsmasq en avant-plan, sous son vrai nom (visible dans « ps aux »,
+#      « lsof », « systemctl status ») ;
+#   2. surveille blocker-guard.service et le relance s'il a ete arrete —
+#      c'est la moitie « resolveur surveille la garde » de la surveillance
+#      croisee ;
+#   3. notifie le watchdog systemd (WatchdogSec) a chaque passe.
+#
+# Il ne relance RIEN si la procedure de desinstallation documentee est en cours
+# (drapeau /run/blocker-adulte/uninstall-in-progress) ou si blocker-guard a ete
+# desactive durablement (systemctl disable). Voir README, « Ce que l'outil ne
+# fait pas ».
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+DNSMASQ_CONF="/etc/dnsmasq.d/blocker-adulte.conf"
+DNSMASQ_BIN="$(command -v dnsmasq || echo /usr/sbin/dnsmasq)"
+
+blocker_ensure_rundir
+chown "${BLOCKER_USER}:${BLOCKER_USER}" "${BLOCKER_RUNDIR}" 2>/dev/null || true
+
+if [ ! -x "${DNSMASQ_BIN}" ]; then
+    blocker_err "dnsmasq introuvable : installer le paquet dnsmasq-base"
+    exit 1
+fi
+
+if [ ! -r "${DNSMASQ_CONF}" ]; then
+    blocker_err "configuration introuvable : ${DNSMASQ_CONF}"
+    exit 1
+fi
+
+# Verification de syntaxe avant lancement : une liste de blocage corrompue ne
+# doit pas mettre le resolveur en boucle de redemarrage.
+if ! "${DNSMASQ_BIN}" --test --conf-file="${DNSMASQ_CONF}" >/dev/null 2>&1; then
+    blocker_err "configuration dnsmasq invalide, sortie detaillee :"
+    "${DNSMASQ_BIN}" --test --conf-file="${DNSMASQ_CONF}" >&2 || true
+    exit 1
+fi
+
+DNSMASQ_PID=""
+
+cleanup() {
+    if [ -n "${DNSMASQ_PID}" ] && kill -0 "${DNSMASQ_PID}" 2>/dev/null; then
+        blocker_info "arret de dnsmasq (pid ${DNSMASQ_PID})"
+        kill -TERM "${DNSMASQ_PID}" 2>/dev/null || true
+        wait "${DNSMASQ_PID}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT INT TERM
+
+start_dnsmasq() {
+    # -k : rester en avant-plan, pas de fork. dnsmasq abandonne ses privileges
+    # vers l'utilisateur blocker-adulte tout seul (directive « user= »).
+    "${DNSMASQ_BIN}" -k --conf-file="${DNSMASQ_CONF}" &
+    DNSMASQ_PID=$!
+    blocker_info "dnsmasq demarre (pid ${DNSMASQ_PID}) sur ${BLOCKER_LISTEN_ADDR}:${BLOCKER_LISTEN_PORT}"
+}
+
+start_dnsmasq
+sleep 1
+if ! kill -0 "${DNSMASQ_PID}" 2>/dev/null; then
+    blocker_err "dnsmasq s'est arrete immediatement — voir les lignes ci-dessus"
+    exit 1
+fi
+
+blocker_notify_ready "resolveur actif sur ${BLOCKER_LISTEN_ADDR}:${BLOCKER_LISTEN_PORT}"
+
+guard_restarts=0
+
+while true; do
+    blocker_watchdog_ping
+
+    # --- le processus dnsmasq est-il toujours la ? -------------------------
+    if ! kill -0 "${DNSMASQ_PID}" 2>/dev/null; then
+        wait "${DNSMASQ_PID}" 2>/dev/null
+        rc=$?
+        blocker_err "dnsmasq s'est termine (code ${rc}) — sortie pour laisser systemd redemarrer l'unite"
+        DNSMASQ_PID=""
+        exit 1
+    fi
+
+    # --- surveillance croisee : la garde tourne-t-elle ? -------------------
+    if blocker_optout_active; then
+        blocker_notify_status "retrait volontaire en cours : surveillance croisee suspendue"
+    elif ! blocker_unit_active blocker-guard.service; then
+        guard_restarts=$((guard_restarts + 1))
+        blocker_repair "blocker-guard.service inactif, relance par le resolveur (relance n°${guard_restarts})"
+        systemctl start blocker-guard.service || \
+            blocker_err "la relance de blocker-guard.service a echoue"
+    else
+        blocker_notify_status "resolveur actif ; blocker-guard.service actif"
+    fi
+
+    blocker_sleep "${BLOCKER_GUARD_INTERVAL}"
+done

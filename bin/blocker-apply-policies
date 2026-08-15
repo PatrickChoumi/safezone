@@ -1,0 +1,104 @@
+#!/bin/bash
+# blocker-adulte — deploiement des policies navigateur (composant 3)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-apply-policies
+#
+# Detecte les navigateurs presents et ecrit la policy correspondante dans le
+# repertoire /etc de chacun. Chaque fichier est independant : retirer un
+# navigateur n'affecte pas les policies des autres.
+#
+# Appele par : install.sh, le postinst du paquet, le trigger dpkg (reinstallation
+# d'un navigateur), blocker-guard et blocker-selfheal.
+#
+# Idempotent : n'ecrit que si le contenu differe du modele, et journalise
+# chaque reecriture.
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+
+FORCE_ALL=0
+if [ "${1:-}" = "--all" ]; then
+    # Deploie meme pour les navigateurs non detectes : utile juste avant
+    # l'installation d'un navigateur, la policy sera deja en place.
+    FORCE_ALL=1
+fi
+
+# Le navigateur est-il present sur le systeme ?
+# On regarde a la fois les binaires, les chemins d'installation habituels et
+# les snaps, parce qu'Ubuntu livre Firefox et Chromium en snap par defaut.
+browser_present() {
+    case "$1" in
+        firefox)
+            command -v firefox >/dev/null 2>&1 && return 0
+            [ -d /usr/lib/firefox ] && return 0
+            [ -d /snap/firefox ] && return 0
+            [ -d /opt/firefox ] && return 0
+            ;;
+        chrome)
+            command -v google-chrome >/dev/null 2>&1 && return 0
+            command -v google-chrome-stable >/dev/null 2>&1 && return 0
+            [ -d /opt/google/chrome ] && return 0
+            ;;
+        chromium)
+            command -v chromium >/dev/null 2>&1 && return 0
+            command -v chromium-browser >/dev/null 2>&1 && return 0
+            [ -d /usr/lib/chromium ] && return 0
+            [ -d /usr/lib/chromium-browser ] && return 0
+            [ -d /snap/chromium ] && return 0
+            ;;
+        brave)
+            command -v brave-browser >/dev/null 2>&1 && return 0
+            [ -d /opt/brave.com/brave ] && return 0
+            ;;
+    esac
+    return 1
+}
+
+deployed=0
+skipped=0
+
+while IFS='|' read -r dir filename family; do
+    [ -n "${dir}" ] || continue
+
+    if [ "${FORCE_ALL}" -eq 0 ] && ! browser_present "${family}"; then
+        # Le navigateur n'est pas installe. On ne cree pas son arborescence /etc
+        # pour rien : le trigger dpkg (composant 5) rappellera ce script si le
+        # navigateur est installe plus tard.
+        skipped=$((skipped + 1))
+        continue
+    fi
+
+    src="$(blocker_policy_source "${family}")" || continue
+    if [ ! -r "${src}" ]; then
+        blocker_err "modele de policy manquant pour ${family} : ${src}"
+        continue
+    fi
+
+    dst="${dir}/${filename}"
+    before="absent"
+    [ -e "${dst}" ] && before="present"
+
+    if blocker_install_protected "${src}" "${dst}" 0644; then
+        if [ "${before}" = "absent" ]; then
+            blocker_repair "policy ${family} deployee : ${dst}"
+        fi
+        deployed=$((deployed + 1))
+    else
+        blocker_err "echec du deploiement de la policy ${family} vers ${dst}"
+    fi
+done < <(blocker_browser_targets)
+
+blocker_info "policies navigateur : ${deployed} en place, ${skipped} navigateur(s) absent(s) ignore(s)"
+
+# Rappel visible : les snaps Firefox et Chromium lisent bien /etc/firefox/policies
+# et /etc/chromium/policies, mais uniquement depuis les versions livrees a partir
+# de 2023. Sur une version plus ancienne, la policy est ignoree silencieusement
+# par le navigateur — d'ou cette verification explicite.
+if browser_present firefox && [ -d /snap/firefox ]; then
+    blocker_info "Firefox est installe en snap : verifier about:policies apres le premier lancement"
+fi
+
+exit 0

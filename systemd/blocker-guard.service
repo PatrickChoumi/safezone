@@ -1,0 +1,27 @@
+[Unit]
+Description=blocker-adulte : watchdog de garde, surveillance croisee (composant 6)
+Documentation=file:///usr/share/doc/blocker-adulte/README.md
+
+After=blocker-resolver.service nftables.service
+Wants=blocker-resolver.service
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart=/usr/lib/blocker-adulte/blocker-guard
+
+WatchdogSec=60s
+Restart=always
+RestartSec=3s
+StartLimitIntervalSec=0
+
+TimeoutStopSec=15s
+
+# La garde doit pouvoir piloter systemd, recharger nftables et reecrire des
+# fichiers dans /etc : elle tourne en root, sans capacite supplementaire cachee.
+ProtectHome=yes
+PrivateTmp=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

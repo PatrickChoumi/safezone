@@ -1,0 +1,17 @@
+[Unit]
+Description=blocker-adulte : mise a jour des listes de blocage (composant 1)
+Documentation=file:///usr/share/doc/blocker-adulte/README.md
+
+# Le telechargement a besoin du reseau ; le resolveur, lui, doit deja tourner
+# pour que les URL des listes soient resolvables.
+After=network-online.target blocker-resolver.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/blocker-adulte/blocker-list-update
+TimeoutStartSec=600s
+
+# Une mise a jour ratee (machine hors ligne) n'est pas une erreur : les listes
+# deja en place restent actives.
+SuccessExitStatus=0 1

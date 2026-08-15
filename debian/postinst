@@ -1,0 +1,63 @@
+#!/bin/sh
+# blocker-adulte — postinst (composant 5)
+#
+# Gere deux cas :
+#   configure  : (re)installation ou mise a jour du paquet lui-meme
+#   triggered  : un navigateur vient d'etre installe, mis a jour ou reinstalle
+#
+# Dans les deux cas on appelle le meme code que install.sh, pour que les deux
+# voies d'installation ne puissent pas diverger.
+
+set -e
+
+LIBDIR=/usr/lib/blocker-adulte
+
+# Levee prealable de l'immuabilite : sans cela, une mise a jour du paquet ne
+# pourrait pas reecrire ses propres fichiers de configuration.
+# Ce n'est pas une contre-mesure — c'est la condition pour qu'apt fonctionne
+# normalement sur ce paquet.
+deverrouiller() {
+    [ -r "${LIBDIR}/blocker-common.sh" ] || return 0
+    command -v chattr >/dev/null 2>&1 || return 0
+    # shellcheck disable=SC1091
+    . "${LIBDIR}/blocker-common.sh"
+    blocker_unlock_all 2>/dev/null || true
+}
+
+case "$1" in
+    configure)
+        deverrouiller
+        if [ -x "${LIBDIR}/blocker-configure" ]; then
+            "${LIBDIR}/blocker-configure"
+        else
+            echo "blocker-adulte: ${LIBDIR}/blocker-configure absent, configuration ignoree" >&2
+            exit 1
+        fi
+        ;;
+
+    triggered)
+        # $2 contient la liste des chemins ayant declenche le trigger.
+        echo "blocker-adulte: trigger dpkg active par : $2"
+        logger -t blocker-adulte -p daemon.notice -- \
+            "trigger dpkg active par : $2 — redeploiement des policies navigateur" || true
+
+        if [ -x "${LIBDIR}/blocker-apply-policies" ]; then
+            # Un echec ici ne doit pas casser la transaction apt du navigateur
+            # en cours d'installation : le self-heal repassera dans 5 minutes.
+            "${LIBDIR}/blocker-apply-policies" || \
+                echo "blocker-adulte: redeploiement partiel, blocker-selfheal.timer reprendra" >&2
+        fi
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "postinst appele avec un argument inconnu : $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

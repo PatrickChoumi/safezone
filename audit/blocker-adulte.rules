@@ -1,0 +1,68 @@
+# blocker-adulte — journalisation des tentatives de modification (composant 8)
+#
+# Installe dans : /etc/audit/rules.d/blocker-adulte.rules
+# Chargement    : augenrules --load  (fait par blocker-configure)
+#
+# Toute ecriture, tout changement d'attribut et toute suppression sur les
+# fichiers du projet est tracee. Rien n'est masque : les evenements sont
+# lisibles par n'importe quel utilisateur autorise a lire le journal d'audit.
+#
+# Consultation :
+#   ausearch -k blocker-adulte -i
+#   ausearch -k blocker-adulte-policies -i --start today
+#   journalctl _TRANSPORT=audit -g blocker-adulte
+#
+# Ces regles n'empechent RIEN : elles enregistrent, c'est tout. La suppression
+# volontaire des fichiers reste possible et sera simplement visible dans le
+# journal, comme n'importe quelle autre modification.
+
+# --- Resolution DNS --------------------------------------------------------
+-w /etc/hosts -p wa -k blocker-adulte
+-w /etc/resolv.conf -p wa -k blocker-adulte
+-w /etc/nsswitch.conf -p wa -k blocker-adulte
+-w /etc/systemd/resolved.conf -p wa -k blocker-adulte
+-w /etc/systemd/resolved.conf.d/blocker-adulte.conf -p wa -k blocker-adulte
+-w /etc/dnsmasq.d/blocker-adulte.conf -p wa -k blocker-adulte
+
+# --- Regles nftables -------------------------------------------------------
+-w /etc/nftables.conf -p wa -k blocker-adulte-nftables
+-w /etc/nftables/blocker-adulte.nft -p wa -k blocker-adulte-nftables
+
+# --- Policies navigateur ---------------------------------------------------
+# Les repertoires sont surveilles recursivement : la creation d'un fichier
+# concurrent dans le meme repertoire est donc visible elle aussi.
+-w /etc/firefox/policies -p wa -k blocker-adulte-policies
+-w /etc/opt/chrome/policies/managed -p wa -k blocker-adulte-policies
+-w /etc/chromium/policies/managed -p wa -k blocker-adulte-policies
+-w /etc/opt/chromium/policies/managed -p wa -k blocker-adulte-policies
+-w /etc/brave/policies/managed -p wa -k blocker-adulte-policies
+
+# --- Unites systemd du projet ----------------------------------------------
+-w /lib/systemd/system/blocker-resolver.service -p wa -k blocker-adulte-units
+-w /lib/systemd/system/blocker-guard.service -p wa -k blocker-adulte-units
+-w /lib/systemd/system/blocker-selfheal.service -p wa -k blocker-adulte-units
+-w /lib/systemd/system/blocker-selfheal.timer -p wa -k blocker-adulte-units
+-w /lib/systemd/system/blocker-list-update.service -p wa -k blocker-adulte-units
+-w /lib/systemd/system/blocker-list-update.timer -p wa -k blocker-adulte-units
+-w /etc/systemd/system/blocker-resolver.service.d -p wa -k blocker-adulte-units
+-w /etc/systemd/system/blocker-guard.service.d -p wa -k blocker-adulte-units
+
+# --- Executables et modeles du projet --------------------------------------
+-w /usr/lib/blocker-adulte -p wa -k blocker-adulte-bin
+-w /usr/share/blocker-adulte -p wa -k blocker-adulte-bin
+-w /usr/sbin/blocker-uninstall -p wa -k blocker-adulte-bin
+
+# --- Hooks initramfs et NetworkManager -------------------------------------
+-w /etc/initramfs-tools/hooks/blocker-adulte -p wa -k blocker-adulte-initramfs
+-w /etc/initramfs-tools/scripts/init-bottom/blocker-adulte -p wa -k blocker-adulte-initramfs
+-w /etc/NetworkManager/dispatcher.d/90-blocker-adulte -p wa -k blocker-adulte
+
+# --- Note sur le retrait d'immuabilite -------------------------------------
+# Pas de regle supplementaire ici : dans « -p wa », le « a » couvre deja les
+# changements d'attribut. Un « chattr -i » sur l'un des fichiers surveilles
+# ci-dessus est donc journalise sans regle dediee.
+#
+# On evite volontairement une regle du type
+#   -a always,exit -F arch=b64 -S ioctl -k ...
+# qui tracerait TOUS les ioctl de la machine : le volume genere rendrait le
+# journal d'audit inexploitable et degraderait sensiblement les performances.

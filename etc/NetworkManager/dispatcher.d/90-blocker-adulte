@@ -1,0 +1,70 @@
+#!/bin/bash
+# blocker-adulte — dispatcher NetworkManager (composant 2)
+#
+# Installe dans : /etc/NetworkManager/dispatcher.d/90-blocker-adulte
+#
+# NetworkManager appelle ce script a chaque changement d'etat reseau. Un
+# changement de reseau (Wi-Fi public, VPN, partage de connexion) pousse
+# frequemment de nouveaux serveurs DNS et peut faire perdre les regles NAT :
+# on reapplique la configuration a chaque fois.
+#
+# Arguments passes par NetworkManager : $1 = interface, $2 = action.
+
+set -uo pipefail
+
+INTERFACE="${1:-inconnue}"
+ACTION="${2:-inconnue}"
+
+TAG="blocker-adulte"
+log() { logger -t "${TAG}" -p daemon.info -- "dispatcher (${INTERFACE}/${ACTION}) : $*"; }
+
+# Le dispatcher tourne aussi pendant l'arret du systeme ; inutile d'agir alors.
+case "${ACTION}" in
+    up|down|vpn-up|vpn-down|connectivity-change|dhcp4-change|dhcp6-change|hostname)
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+# Retrait volontaire en cours : on ne reapplique rien.
+if [ -e /run/blocker-adulte/uninstall-in-progress ]; then
+    log "retrait volontaire en cours, aucune reapplication"
+    exit 0
+fi
+
+# --- 1. Regles nftables ----------------------------------------------------
+# Certains clients VPN inserent ou vident des regles au montage du tunnel.
+if [ -x /usr/lib/blocker-adulte/blocker-apply-nftables ]; then
+    if ! /usr/lib/blocker-adulte/blocker-apply-nftables --check >/dev/null 2>&1; then
+        log "regles nftables absentes apres le changement reseau, rechargement"
+        /usr/lib/blocker-adulte/blocker-apply-nftables --force >/dev/null 2>&1 \
+            && log "regles nftables rechargees" \
+            || log "ECHEC du rechargement des regles nftables"
+    fi
+fi
+
+# --- 2. Serveurs DNS pousses par le lien -----------------------------------
+# Le drop-in « Domains=~. » de systemd-resolved suffit normalement a ignorer les
+# DNS du lien, mais un VPN avec une priorite negative peut passer devant. On
+# force explicitement le lien concerne sur le resolveur local.
+if [ "${INTERFACE}" != "inconnue" ] && command -v resolvectl >/dev/null 2>&1; then
+    case "${ACTION}" in
+        up|vpn-up|dhcp4-change|dhcp6-change)
+            if resolvectl dns "${INTERFACE}" 127.0.0.1 2>/dev/null && \
+               resolvectl domain "${INTERFACE}" '~.' 2>/dev/null; then
+                log "DNS du lien force sur 127.0.0.1"
+            fi
+            ;;
+    esac
+fi
+
+# --- 3. Le resolveur tourne-t-il toujours ? --------------------------------
+if ! systemctl is-active --quiet blocker-resolver.service; then
+    log "blocker-resolver.service inactif, relance"
+    systemctl start blocker-resolver.service \
+        && log "blocker-resolver.service relance" \
+        || log "ECHEC de la relance de blocker-resolver.service"
+fi
+
+exit 0

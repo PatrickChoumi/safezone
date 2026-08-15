@@ -1,0 +1,134 @@
+#!/bin/bash
+# blocker-adulte — test : les canaux DNS chiffres sont bloques
+#
+# Verifie que DoH, DoT et DoQ ne peuvent pas servir de porte de sortie :
+#   - regles nftables presentes ;
+#   - connexion TCP/853 refusee ;
+#   - requete DoH vers un endpoint public en echec ;
+#   - policies navigateur desactivant DoH bien deployees.
+#
+# sudo tests/test_doh_blocked.sh
+
+set -uo pipefail
+. "$(dirname "$0")/lib.sh"
+
+exiger_root
+exiger_installe
+exiger_commande nft "nftables"
+
+titre "1. Regles nftables de blocage des canaux chiffres"
+
+verifier "table inet blocker_adulte presente" nft list table inet blocker_adulte
+
+regles="$(nft list table inet blocker_adulte 2>/dev/null || true)"
+
+for motif in "dport 853" "784" "8853" "doh_ipv4" "doh_ipv6"; do
+    if printf '%s' "${regles}" | grep -q -- "${motif}"; then
+        ok "regle presente : ${motif}"
+    else
+        ko "regle absente : ${motif}"
+    fi
+done
+
+titre "2. DNS-over-TLS (port 853) refuse"
+
+# On vise Cloudflare, mais n'importe quel hote ferait l'affaire : le blocage
+# porte sur le port, pas sur la destination.
+if command -v timeout >/dev/null 2>&1; then
+    if timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/853' 2>/dev/null; then
+        ko "la connexion TCP vers 1.1.1.1:853 a abouti — DoT n'est pas bloque"
+        exec 3<&- 2>/dev/null || true
+    else
+        ok "connexion TCP vers 1.1.1.1:853 refusee"
+    fi
+else
+    warn "commande timeout absente, controle ignore"
+fi
+
+titre "3. Requete DoH vers un endpoint public"
+
+if command -v curl >/dev/null 2>&1; then
+    # --resolve court-circuite le DNS : on teste bien le blocage IP, pas le
+    # blocage de nom. Sinon un DNS qui bloque deja dns.google donnerait un
+    # faux positif.
+    if curl --silent --show-error --max-time 8 \
+            --resolve 'dns.google:443:8.8.8.8' \
+            --header 'accept: application/dns-json' \
+            'https://dns.google/resolve?name=example.com&type=A' >/dev/null 2>&1; then
+        ko "une requete DoH vers 8.8.8.8 a abouti"
+        info "verifier le set doh_ipv4 : sudo nft list set inet blocker_adulte doh_ipv4"
+    else
+        ok "requete DoH vers 8.8.8.8 en echec"
+    fi
+
+    if curl --silent --show-error --max-time 8 \
+            --resolve 'cloudflare-dns.com:443:1.1.1.1' \
+            --header 'accept: application/dns-json' \
+            'https://cloudflare-dns.com/dns-query?name=example.com&type=A' >/dev/null 2>&1; then
+        ko "une requete DoH vers 1.1.1.1 a abouti"
+    else
+        ok "requete DoH vers 1.1.1.1 en echec"
+    fi
+else
+    warn "curl absent, controle ignore"
+fi
+
+titre "4. Le resolveur local filtre les noms des endpoints DoH"
+
+if command -v dig >/dev/null 2>&1; then
+    for domaine in dns.google cloudflare-dns.com dns.quad9.net mozilla.cloudflare-dns.com; do
+        r="$(dig +short +time=3 +tries=1 @127.0.0.1 "${domaine}" 2>/dev/null || true)"
+        if [ -z "${r}" ]; then
+            ok "${domaine} ne resout pas"
+        else
+            ko "${domaine} resout vers ${r}"
+        fi
+    done
+else
+    warn "dig absent, controle ignore"
+fi
+
+titre "5. Les enregistrements HTTPS/SVCB (type 65) sont filtres"
+
+# Ces enregistrements annoncent aux navigateurs les endpoints DoH disponibles :
+# les laisser passer permettrait une bascule automatique vers DoH.
+if grep -q '^filter-rr=65' /etc/dnsmasq.d/blocker-adulte.conf 2>/dev/null; then
+    ok "filter-rr=65 present dans la configuration du resolveur"
+else
+    ko "filter-rr=65 absent de /etc/dnsmasq.d/blocker-adulte.conf"
+fi
+
+titre "6. Policies navigateur : DoH desactive"
+
+trouve=0
+for f in /etc/firefox/policies/policies.json \
+         /etc/opt/chrome/policies/managed/blocker-adulte.json \
+         /etc/chromium/policies/managed/blocker-adulte.json \
+         /etc/opt/chromium/policies/managed/blocker-adulte.json \
+         /etc/brave/policies/managed/blocker-adulte.json; do
+    [ -s "${f}" ] || continue
+    trouve=$((trouve + 1))
+    case "${f}" in
+        */firefox/*)
+            if grep -q '"DNSOverHTTPS"' "${f}" && grep -q '"Locked": *true' "${f}"; then
+                ok "Firefox : DoH desactive et verrouille (${f})"
+            else
+                ko "Firefox : policy DoH incomplete (${f})"
+            fi
+            ;;
+        *)
+            if grep -q '"DnsOverHttpsMode": *"off"' "${f}"; then
+                ok "Chromium/Chrome/Brave : DnsOverHttpsMode=off (${f})"
+            else
+                ko "policy DoH incomplete (${f})"
+            fi
+            ;;
+    esac
+done
+
+if [ "${trouve}" -eq 0 ]; then
+    warn "aucune policy navigateur deployee — aucun navigateur detecte sur cette machine ?"
+    info "forcer le deploiement : sudo /usr/lib/blocker-adulte/blocker-apply-policies --all"
+fi
+
+bilan

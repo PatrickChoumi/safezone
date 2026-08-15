@@ -1,0 +1,14 @@
+[Unit]
+Description=blocker-adulte : passe de self-heal (composant 7)
+Documentation=file:///usr/share/doc/blocker-adulte/README.md
+
+# Unite de service declenchee par blocker-selfheal.timer. Elle n'est pas
+# activee au boot : c'est le timer qui la lance.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/blocker-adulte/blocker-selfheal
+TimeoutStartSec=120s
+
+# Une passe en echec ne doit pas desarmer le timer.
+SuccessExitStatus=0 1

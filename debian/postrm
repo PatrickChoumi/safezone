@@ -1,0 +1,125 @@
+#!/bin/sh
+# blocker-adulte — postrm
+#
+# Appele APRES le retrait des fichiers du paquet.
+#
+# « remove » : on retire ce que dpkg ne connait pas, c'est-a-dire les fichiers
+#              poses dans /etc par blocker-configure et les tables nftables
+#              chargees en memoire.
+# « purge »  : on retire en plus l'etat (listes telechargees, configuration
+#              locale) et l'utilisateur systeme.
+#
+# Ce script est ecrit pour ne jamais echouer : un postrm en erreur laisse le
+# paquet dans l'etat « half-configured », qui est precisement l'etat fantome que
+# la procedure de desinstallation cherche a eviter.
+
+set -e
+
+purger_fichiers_etc() {
+    # Fichiers poses par blocker-configure, hors du perimetre de dpkg.
+    for f in \
+        /etc/dnsmasq.d/blocker-adulte.conf \
+        /etc/nftables/blocker-adulte.nft \
+        /etc/systemd/resolved.conf.d/blocker-adulte.conf \
+        /etc/NetworkManager/dispatcher.d/90-blocker-adulte \
+        /etc/audit/rules.d/blocker-adulte.rules \
+        /etc/initramfs-tools/hooks/blocker-adulte \
+        /etc/initramfs-tools/scripts/init-bottom/blocker-adulte \
+        /etc/firefox/policies/policies.json \
+        /etc/opt/chrome/policies/managed/blocker-adulte.json \
+        /etc/chromium/policies/managed/blocker-adulte.json \
+        /etc/opt/chromium/policies/managed/blocker-adulte.json \
+        /etc/brave/policies/managed/blocker-adulte.json
+    do
+        if [ -e "$f" ]; then
+            chattr -i "$f" 2>/dev/null || true
+            rm -f "$f" || true
+        fi
+    done
+
+    # Ligne d'inclusion ajoutee a /etc/nftables.conf par blocker-configure.
+    if [ -e /etc/nftables.conf ] && grep -qF 'blocker-adulte.nft' /etc/nftables.conf; then
+        cp -a /etc/nftables.conf /etc/nftables.conf.avant-blocker-adulte 2>/dev/null || true
+        sed -i '/blocker-adulte/d' /etc/nftables.conf || true
+        echo "blocker-adulte: ligne d'inclusion retiree de /etc/nftables.conf"
+        echo "blocker-adulte: sauvegarde dans /etc/nftables.conf.avant-blocker-adulte"
+    fi
+}
+
+purger_tables_nftables() {
+    # Les regles nftables sont un etat du noyau : supprimer les fichiers ne les
+    # decharge pas. Sans cette etape, le DNS resterait redirige vers un
+    # resolveur qui n'existe plus — la machine paraitrait privee de DNS.
+    command -v nft >/dev/null 2>&1 || return 0
+    nft delete table ip blocker_adulte_nat        2>/dev/null || true
+    nft delete table ip6 blocker_adulte_nat       2>/dev/null || true
+    nft delete table inet blocker_adulte          2>/dev/null || true
+    nft delete table ip blocker_adulte_base_nat   2>/dev/null || true
+    nft delete table inet blocker_adulte_base     2>/dev/null || true
+}
+
+regenerer_initramfs() {
+    # Le hook a ete supprime ci-dessus ; sans regeneration, l'image en place
+    # continuerait a charger les regles de base a chaque demarrage.
+    if command -v update-initramfs >/dev/null 2>&1; then
+        echo "blocker-adulte: regeneration de l'initramfs apres retrait du hook"
+        update-initramfs -u >/dev/null 2>&1 || \
+            echo "blocker-adulte: update-initramfs -u a echoue, le relancer a la main" >&2
+    fi
+}
+
+case "$1" in
+    remove)
+        purger_fichiers_etc
+        purger_tables_nftables
+        regenerer_initramfs
+
+        if command -v augenrules >/dev/null 2>&1; then
+            augenrules --load >/dev/null 2>&1 || true
+        fi
+
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl restart systemd-resolved.service >/dev/null 2>&1 || true
+        ;;
+
+    purge)
+        purger_fichiers_etc
+        purger_tables_nftables
+        regenerer_initramfs
+
+        rm -rf /var/lib/blocker-adulte || true
+        rm -rf /etc/blocker-adulte || true
+        rm -rf /run/blocker-adulte || true
+
+        if getent passwd blocker-adulte >/dev/null 2>&1; then
+            deluser --system blocker-adulte >/dev/null 2>&1 || true
+        fi
+        if getent group blocker-adulte >/dev/null 2>&1; then
+            delgroup --system blocker-adulte >/dev/null 2>&1 || true
+        fi
+
+        if command -v augenrules >/dev/null 2>&1; then
+            augenrules --load >/dev/null 2>&1 || true
+        fi
+
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl reset-failed >/dev/null 2>&1 || true
+        systemctl restart systemd-resolved.service >/dev/null 2>&1 || true
+
+        echo "blocker-adulte: purge terminee."
+        echo "blocker-adulte: verifier avec « sudo find / -xdev -name '*blocker-adulte*' »"
+        ;;
+
+    upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        # Mise a jour : on ne touche a rien, le postinst reconfigurera.
+        ;;
+
+    *)
+        echo "postrm appele avec un argument inconnu : $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

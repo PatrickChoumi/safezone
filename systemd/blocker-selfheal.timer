@@ -1,0 +1,22 @@
+[Unit]
+Description=blocker-adulte : self-heal toutes les 5 minutes (composant 7)
+Documentation=file:///usr/share/doc/blocker-adulte/README.md
+
+[Timer]
+# Premiere passe une minute apres le boot, puis toutes les 5 minutes.
+OnBootSec=1min
+OnUnitActiveSec=5min
+
+# Rattrapage apres une suspension ou un arret : la passe manquee est jouee au
+# reveil plutot qu'attendue jusqu'au prochain creneau.
+Persistent=true
+
+# Legere dispersion pour ne pas se declencher exactement en meme temps que
+# d'autres timers systeme.
+AccuracySec=10s
+RandomizedDelaySec=15s
+
+Unit=blocker-selfheal.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,49 @@
+[Unit]
+Description=blocker-adulte : resolveur DNS local filtrant (composant 1)
+Documentation=file:///usr/share/doc/blocker-adulte/README.md
+Documentation=man:dnsmasq(8)
+
+# Charge tot : le resolveur doit etre pret avant que quoi que ce soit tente de
+# resoudre un nom.
+After=network-pre.target nftables.service
+Wants=network-pre.target
+Before=network-online.target nss-lookup.target
+
+# Surveillance croisee (composant 6) : chaque service veut l'autre. Il n'y a pas
+# de cycle d'ordonnancement, seul blocker-guard est ordonne apres celui-ci.
+Wants=blocker-guard.service
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart=/usr/lib/blocker-adulte/blocker-resolver-run
+
+# Le superviseur envoie WATCHDOG=1 toutes les 15 s ; au-dela de 60 s sans
+# signal, systemd considere le service bloque et le redemarre.
+WatchdogSec=60s
+Restart=always
+RestartSec=3s
+
+# Pas de limite de taux de redemarrage : un service qui « abandonne » apres
+# cinq echecs laisserait la machine sans DNS filtre.
+StartLimitIntervalSec=0
+
+TimeoutStopSec=15s
+KillMode=mixed
+
+# dnsmasq doit lier le port 53 puis abandonner ses privileges vers
+# l'utilisateur blocker-adulte (directive « user= » de sa configuration).
+# Le processus reste visible sous son vrai nom dans « ps aux » et « lsof ».
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_SETUID CAP_SETGID
+NoNewPrivileges=no
+
+# Durcissement raisonnable, sans masquer quoi que ce soit du systeme de fichiers
+# aux outils d'inspection de l'utilisateur.
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

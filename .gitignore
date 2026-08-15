@@ -1,0 +1,11 @@
+# Artefacts de construction du paquet .deb
+debian/tmp/
+debian/blocker-adulte/
+debian/.debhelper/
+debian/files
+debian/*.substvars
+debian/*.debhelper.log
+debian/debhelper-build-stamp
+*.deb
+*.buildinfo
+*.changes

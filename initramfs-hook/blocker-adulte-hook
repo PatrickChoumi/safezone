@@ -1,0 +1,121 @@
+#!/bin/sh
+# blocker-adulte — hook initramfs-tools (composant 4)
+#
+# Installe dans : /etc/initramfs-tools/hooks/blocker-adulte
+# Actif apres   : update-initramfs -u
+#
+# Ce hook s'execute sur le systeme en fonctionnement, au moment ou l'image
+# initramfs est construite. Son role est d'embarquer dans cette image :
+#   - le binaire nft et ses bibliotheques ;
+#   - les modules noyau netfilter necessaires ;
+#   - un jeu de regles nftables « de base » (redirection DNS + blocage DoT/DoH).
+#
+# Le script qui charge reellement ces regles au demarrage est
+# /etc/initramfs-tools/scripts/init-bottom/blocker-adulte.
+#
+# Pourquoi : les regles nftables sont un etat du noyau. Chargees depuis
+# l'initramfs, elles survivent au switch_root et restent donc actives meme si
+# la machine demarre en mode recovery / single-user, ou nftables.service n'est
+# pas lance.
+#
+# Ce hook ne touche NI au bootloader NI au firmware : il ne fait qu'ajouter des
+# fichiers dans l'image initramfs, regeneree par update-initramfs.
+
+set -e
+
+PREREQ=""
+prereqs() { echo "${PREREQ}"; }
+
+case "${1:-}" in
+    prereqs)
+        prereqs
+        exit 0
+        ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+NFT_BIN="$(command -v nft || echo /usr/sbin/nft)"
+
+if [ ! -x "${NFT_BIN}" ]; then
+    echo "blocker-adulte: nft introuvable, regles de base non embarquees dans l'initramfs" >&2
+    echo "blocker-adulte: installer le paquet nftables puis relancer update-initramfs -u" >&2
+    exit 0
+fi
+
+# --- 1. Binaire nft + bibliotheques ----------------------------------------
+copy_exec "${NFT_BIN}" /sbin
+
+# --- 2. Modules noyau netfilter --------------------------------------------
+# Sans eux, nft echoue dans l'initramfs avec « Operation not supported ».
+for module in \
+    nf_tables \
+    nft_chain_nat \
+    nft_redir \
+    nft_reject \
+    nft_reject_inet \
+    nf_nat \
+    nf_conntrack \
+    nf_defrag_ipv4
+do
+    manual_add_modules "${module}" 2>/dev/null || true
+done
+
+# --- 3. Jeu de regles de base ----------------------------------------------
+# Les regles completes de /etc/nftables/blocker-adulte.nft resolvent
+# « meta skuid "blocker-adulte" » via la base utilisateurs, absente de
+# l'initramfs. On genere donc ici une variante ou l'UID est ecrit en dur, en
+# le lisant sur le systeme en fonctionnement.
+BLOCKER_UID="$(getent passwd blocker-adulte 2>/dev/null | cut -d: -f3)"
+
+if [ -z "${BLOCKER_UID}" ]; then
+    echo "blocker-adulte: utilisateur systeme absent, regles de base non embarquees" >&2
+    echo "blocker-adulte: lancer /usr/lib/blocker-adulte/blocker-configure puis update-initramfs -u" >&2
+    exit 0
+fi
+
+mkdir -p "${DESTDIR}/etc/blocker-adulte"
+
+# Table distincte (« _base ») de celle du systeme complet : les deux peuvent
+# coexister sans se marcher dessus, et le suffixe rend evident, dans
+# « nft list ruleset », d'ou vient chaque regle.
+cat > "${DESTDIR}/etc/blocker-adulte/base.nft" <<EOF
+#!/sbin/nft -f
+# blocker-adulte — regles de base chargees depuis l'initramfs (composant 4).
+# Genere par /etc/initramfs-tools/hooks/blocker-adulte le $(date -u '+%Y-%m-%d %H:%M:%S UTC').
+# UID de l'utilisateur systeme blocker-adulte au moment de la generation : ${BLOCKER_UID}
+#
+# Si cet UID change (recreation de l'utilisateur), relancer :
+#   update-initramfs -u
+
+table ip blocker_adulte_base_nat
+delete table ip blocker_adulte_base_nat
+table ip blocker_adulte_base_nat {
+    chain output {
+        type nat hook output priority dstnat; policy accept;
+        meta skuid ${BLOCKER_UID} return
+        ip daddr 127.0.0.0/8 return
+        meta l4proto { tcp, udp } th dport 53 redirect to :53
+    }
+}
+
+table inet blocker_adulte_base
+delete table inet blocker_adulte_base
+table inet blocker_adulte_base {
+    chain output {
+        type filter hook output priority filter; policy accept;
+        meta skuid ${BLOCKER_UID} accept
+        ip daddr 127.0.0.0/8 accept
+        ip6 daddr ::1 accept
+        tcp dport 853 reject with tcp reset
+        udp dport 853 drop
+        udp dport { 784, 8853 } drop
+    }
+}
+EOF
+
+chmod 0644 "${DESTDIR}/etc/blocker-adulte/base.nft"
+
+echo "blocker-adulte: regles de base embarquees dans l'initramfs (uid ${BLOCKER_UID})"
+
+exit 0

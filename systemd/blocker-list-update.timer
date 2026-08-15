@@ -1,0 +1,17 @@
+[Unit]
+Description=blocker-adulte : mise a jour quotidienne des listes de blocage
+Documentation=file:///usr/share/doc/blocker-adulte/README.md
+
+[Timer]
+OnCalendar=daily
+# Rattrapage si la machine etait eteinte a l'heure prevue.
+Persistent=true
+# Dispersion sur une heure : evite de taper sur GitHub a la meme seconde que
+# tout le monde.
+RandomizedDelaySec=1h
+AccuracySec=1min
+
+Unit=blocker-list-update.service
+
+[Install]
+WantedBy=timers.target

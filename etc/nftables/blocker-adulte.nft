@@ -1,0 +1,139 @@
+#!/usr/sbin/nft -f
+#
+# blocker-adulte — application reseau forcee (composant 2)
+#
+# Installe dans : /etc/nftables/blocker-adulte.nft
+# Charge par    : /etc/nftables.conf (ligne « include » ajoutee par install.sh)
+#                 et par /usr/lib/blocker-adulte/blocker-apply-nftables
+#
+# Ce fichier ne touche QUE ses propres tables (blocker_adulte*). Il ne contient
+# aucun « flush ruleset » : les regles de pare-feu de l'utilisateur, de Docker
+# ou de libvirt sont laissees intactes.
+
+# ---------------------------------------------------------------------------
+# 1. Redirection DNAT du DNS en clair vers le resolveur local
+# ---------------------------------------------------------------------------
+# Toute requete vers le port 53, quel que soit le serveur vise, est reecrite
+# vers 127.0.0.1:53. Configurer « DNS 8.8.8.8 » a la main dans NetworkManager
+# ne change donc rien au resultat.
+
+table ip blocker_adulte_nat
+delete table ip blocker_adulte_nat
+table ip blocker_adulte_nat {
+    chain output {
+        type nat hook output priority dstnat; policy accept;
+
+        # Le resolveur local doit pouvoir joindre ses amonts, sinon boucle.
+        meta skuid "blocker-adulte" return
+
+        # Trafic deja destine a la boucle locale : rien a faire.
+        ip daddr 127.0.0.0/8 return
+
+        meta l4proto { tcp, udp } th dport 53 \
+            redirect to :53 comment "DNS en clair -> resolveur local"
+    }
+
+    # Meme traitement pour le trafic relaye (partage de connexion, conteneurs,
+    # machines virtuelles en NAT) : ils passent par le resolveur local aussi.
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+
+        ip daddr 127.0.0.0/8 return
+        meta l4proto { tcp, udp } th dport 53 \
+            redirect to :53 comment "DNS relaye -> resolveur local"
+    }
+}
+
+table ip6 blocker_adulte_nat
+delete table ip6 blocker_adulte_nat
+table ip6 blocker_adulte_nat {
+    chain output {
+        type nat hook output priority dstnat; policy accept;
+
+        meta skuid "blocker-adulte" return
+        ip6 daddr ::1 return
+
+        # Pas de resolveur local en IPv6 : on renvoie vers ::1 ou l'on n'ecoute
+        # pas, ce qui fait echouer la requete IPv6 et bascule le client sur
+        # IPv4, ou elle sera redirigee proprement. Voir README, section
+        # « Limites connues ».
+        meta l4proto { tcp, udp } th dport 53 \
+            drop comment "DNS IPv6 en clair -> abandon, bascule IPv4"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# 2. Blocage des canaux de contournement chiffres
+# ---------------------------------------------------------------------------
+# DoT (853) et DoQ (784/8853) ne peuvent pas etre rediriges vers un resolveur
+# en clair : une redirection produirait une poignee de main TLS invalide et un
+# echec silencieux difficile a diagnostiquer. Ils sont donc refuses
+# explicitement, avec un rejet TCP franc pour que le client bascule vite.
+
+table inet blocker_adulte
+delete table inet blocker_adulte
+table inet blocker_adulte {
+
+    # Adresses d'amorcage des principaux fournisseurs DoH. Un navigateur dont
+    # la policy DoH a ete contournee ne trouvera pas son endpoint.
+    # Liste volontairement courte et documentee : elle est completee cote DNS
+    # par la liste Hagezi doh-vpn-proxy-bypass (composant 1).
+    set doh_ipv4 {
+        type ipv4_addr
+        flags interval
+        elements = {
+            1.1.1.1, 1.0.0.1,                   # Cloudflare
+            8.8.8.8, 8.8.4.4,                   # Google
+            9.9.9.9, 149.112.112.112,           # Quad9
+            94.140.14.14, 94.140.15.15,         # AdGuard
+            45.90.28.0/24, 45.90.30.0/24,       # NextDNS
+            76.76.2.0/24, 76.76.10.0/24,        # ControlD
+            185.228.168.9, 185.228.169.9,       # CleanBrowsing
+            208.67.222.222, 208.67.220.220      # OpenDNS
+        }
+    }
+
+    set doh_ipv6 {
+        type ipv6_addr
+        flags interval
+        elements = {
+            2606:4700:4700::1111, 2606:4700:4700::1001,
+            2001:4860:4860::8888, 2001:4860:4860::8844,
+            2620:fe::fe, 2620:fe::9,
+            2a10:50c0::ad1:ff, 2a10:50c0::ad2:ff
+        }
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+
+        # Le resolveur local est le seul autorise a sortir sans contrainte.
+        meta skuid "blocker-adulte" accept
+        ip daddr 127.0.0.0/8 accept
+        ip6 daddr ::1 accept
+
+        # DNS-over-TLS
+        tcp dport 853 reject with tcp reset comment "DoT bloque"
+        udp dport 853 drop comment "DoQ bloque"
+
+        # DNS-over-QUIC (ports historiques)
+        udp dport { 784, 8853 } drop comment "DoQ bloque (ports alternatifs)"
+
+        # DNS-over-HTTPS vers les resolveurs publics connus, en TCP et en QUIC.
+        tcp dport 443 ip daddr @doh_ipv4 reject with tcp reset comment "DoH bloque"
+        tcp dport 443 ip6 daddr @doh_ipv6 reject with tcp reset comment "DoH bloque"
+        udp dport 443 ip daddr @doh_ipv4 drop comment "DoH/QUIC bloque"
+        udp dport 443 ip6 daddr @doh_ipv6 drop comment "DoH/QUIC bloque"
+    }
+
+    # Meme politique pour le trafic relaye.
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+
+        tcp dport 853 reject with tcp reset comment "DoT relaye bloque"
+        udp dport 853 drop
+        udp dport { 784, 8853 } drop
+        tcp dport 443 ip daddr @doh_ipv4 reject with tcp reset
+        udp dport 443 ip daddr @doh_ipv4 drop
+    }
+}

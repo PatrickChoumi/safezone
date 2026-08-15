@@ -1,0 +1,42 @@
+# blocker-adulte — triggers dpkg (composant 5)
+#
+# Chaque ligne declare un chemin surveille. Quand un AUTRE paquet installe,
+# met a jour ou reinstalle des fichiers sous ce chemin, dpkg active le trigger
+# et rappelle le postinst de blocker-adulte avec l'argument « triggered ».
+#
+# Objectif : « apt reinstall firefox » (ou une mise a jour de Chrome, ou
+# l'installation de Brave apres coup) ne doit pas laisser le navigateur sans
+# policy. Le postinst redeploie les policies a chaque activation.
+#
+# « noawait » : blocker-adulte n'a pas besoin d'etre configure avant que le
+# paquet declencheur ne le soit. Utiliser « await » ici creerait une
+# dependance de configuration inutile et pourrait bloquer une mise a jour de
+# navigateur si notre postinst echouait.
+#
+# Ces triggers portent sur des chemins de paquets .deb. Les navigateurs
+# installes en snap (Firefox et Chromium par defaut sur Ubuntu 22.04+) ne
+# passent pas par dpkg : leurs rafraichissements sont couverts par
+# blocker-selfheal.timer, qui repasse toutes les 5 minutes.
+
+# Firefox (.deb Mozilla, PPA mozillateam, firefox-esr Debian)
+interest-noawait /usr/lib/firefox
+interest-noawait /usr/lib/firefox-esr
+interest-noawait /opt/firefox
+
+# Google Chrome
+interest-noawait /opt/google/chrome
+
+# Chromium (.deb Debian et Ubuntu, les deux dispositions coexistent)
+interest-noawait /usr/lib/chromium
+interest-noawait /usr/lib/chromium-browser
+
+# Brave
+interest-noawait /opt/brave.com/brave
+
+# Repertoires de policies eux-memes : si un paquet de navigateur recree ou
+# remplace son arborescence de policies, on redeploie.
+interest-noawait /etc/firefox/policies
+interest-noawait /etc/opt/chrome/policies/managed
+interest-noawait /etc/chromium/policies/managed
+interest-noawait /etc/opt/chromium/policies/managed
+interest-noawait /etc/brave/policies/managed

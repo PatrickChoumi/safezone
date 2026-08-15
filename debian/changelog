@@ -1,0 +1,23 @@
+blocker-adulte (1.0.0) unstable; urgency=medium
+
+  * Version initiale : blocage de contenu adulte persistant et distribue.
+    - Composant 1 : resolveur DNS local dnsmasq sur 127.0.0.1:53, listes
+      categorisees (StevenBlack porn-only, Hagezi doh-vpn-proxy-bypass) et
+      amont filtrant de secours.
+    - Composant 2 : systemd-resolved pointe sur le resolveur local, plus des
+      regles nftables qui redirigent le DNS en clair et refusent DoT/DoQ/DoH.
+    - Composant 3 : policies deployees dans chacun des quatre navigateurs
+      detectes, chaque fichier independant des autres.
+    - Composant 4 : hook initramfs chargeant un jeu de regles de base, actif
+      des le boot y compris en mode recovery.
+    - Composant 5 : postinst et triggers dpkg, pour qu'une reinstallation de
+      navigateur ne fasse pas disparaitre sa policy.
+    - Composant 6 : blocker-resolver.service et blocker-guard.service en
+      surveillance croisee.
+    - Composant 7 : blocker-selfheal.timer, passe complete toutes les
+      5 minutes, chaque ecart journalise.
+    - Composant 8 : regles auditd sur tous les fichiers proteges.
+  * Desinstallation complete documentee en huit etapes et automatisee par
+    « blocker-uninstall --confirm ».
+
+ -- blocker-adulte <root@localhost>  Sat, 15 Aug 2026 10:00:00 +0000

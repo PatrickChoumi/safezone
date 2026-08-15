@@ -1,0 +1,53 @@
+#!/bin/sh
+# blocker-adulte — prerm
+#
+# Appele AVANT le retrait des fichiers du paquet.
+#
+# Son role est de rendre le retrait possible, pas de le contrarier : on leve
+# l'immuabilite et on arrete proprement les services, dans le meme ordre que la
+# procedure documentee (garde d'abord, resolveur ensuite), pour que les
+# watchdogs ne se relancent pas mutuellement pendant la suppression.
+
+set -e
+
+LIBDIR=/usr/lib/blocker-adulte
+RUNDIR=/run/blocker-adulte
+
+case "$1" in
+    remove|deconfigure|upgrade|failed-upgrade)
+
+        if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+            # Signale aux watchdogs encore vivants que le retrait est
+            # volontaire : ils cessent immediatement toute reparation.
+            mkdir -p "${RUNDIR}"
+            printf 'Retrait du paquet lance le %s\n' "$(date -Is)" \
+                > "${RUNDIR}/uninstall-in-progress"
+            logger -t blocker-adulte -p daemon.notice -- \
+                "prerm : retrait du paquet, les watchdogs se mettent en retrait" || true
+
+            # Ordre impose : la garde relance le resolveur, donc elle part en
+            # premier. Chaque unite est desactivee avant d'etre arretee.
+            for u in blocker-guard.service blocker-resolver.service \
+                     blocker-selfheal.timer blocker-list-update.timer; do
+                deb-systemd-invoke stop "$u" >/dev/null 2>&1 || \
+                    systemctl stop "$u" >/dev/null 2>&1 || true
+            done
+        fi
+
+        # Sans cela, dpkg ne peut pas supprimer les fichiers immuables.
+        if [ -r "${LIBDIR}/blocker-common.sh" ] && command -v chattr >/dev/null 2>&1; then
+            # shellcheck disable=SC1091
+            . "${LIBDIR}/blocker-common.sh"
+            blocker_unlock_all 2>/dev/null || true
+        fi
+        ;;
+
+    *)
+        echo "prerm appele avec un argument inconnu : $1" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

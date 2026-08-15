@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "blocker-adulte - policy Firefox (composant 3).",
+    "Deployee dans /etc/firefox/policies/policies.json par blocker-apply-policies.",
+    "Independante des policies Chrome/Chromium/Brave : desinstaller un navigateur",
+    "n'affecte pas les autres. Firefox ignore les cles inconnues du niveau racine,",
+    "ce bloc _comment est donc sans effet fonctionnel.",
+    "Retrait : voir README, etape 5 de la procedure de desinstallation."
+  ],
+
+  "policies": {
+    "DNSOverHTTPS": {
+      "Enabled": false,
+      "Locked": true,
+      "ExcludedDomains": []
+    },
+
+    "DisablePrivateBrowsing": true,
+
+    "BlockAboutConfig": true,
+
+    "Preferences": {
+      "network.trr.mode": {
+        "Value": 5,
+        "Status": "locked"
+      },
+      "network.dns.disablePrefetch": {
+        "Value": true,
+        "Status": "locked"
+      },
+      "media.peerconnection.enabled": {
+        "Value": false,
+        "Status": "locked"
+      }
+    },
+
+    "Proxy": {
+      "Mode": "system",
+      "Locked": true
+    },
+
+    "UserMessaging": {
+      "ExtensionRecommendations": false
+    }
+  }
+}

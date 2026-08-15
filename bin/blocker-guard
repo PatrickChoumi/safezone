@@ -1,0 +1,127 @@
+#!/bin/bash
+# blocker-adulte — watchdog de garde (composant 6)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-guard
+# Lance par     : blocker-guard.service
+#
+# A chaque passe (${BLOCKER_GUARD_INTERVAL} secondes par defaut) :
+#   1. verifie que blocker-resolver.service tourne, le relance sinon ;
+#   2. verifie que le resolveur repond reellement a une requete DNS ;
+#   3. verifie que les regles nftables attendues sont chargees ;
+#   4. verifie que les policies navigateur sont en place ;
+#   5. verifie que le drop-in systemd-resolved est intact.
+#
+# Chaque ecart detecte est journalise AVANT d'etre corrige. Aucune correction
+# n'est silencieuse : « journalctl -u blocker-guard » donne l'historique complet.
+#
+# Cette boucle se met entierement en retrait si la procedure de desinstallation
+# documentee est en cours. Elle ne surveille pas les commandes de l'utilisateur
+# et ne cherche pas a devancer une suppression.
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_ensure_rundir
+blocker_notify_ready "demarrage"
+
+pass=0
+resolver_restarts=0
+
+# Le resolveur repond-il vraiment ? Un processus vivant ne suffit pas : dnsmasq
+# peut tourner avec une liste corrompue et ne rien resoudre.
+resolver_repond() {
+    if command -v dig >/dev/null 2>&1; then
+        dig +short +time=2 +tries=1 @127.0.0.1 localhost >/dev/null 2>&1 && return 0
+        # Une reponse NXDOMAIN reste une reponse : le resolveur fonctionne.
+        dig +time=2 +tries=1 @127.0.0.1 blocker-adulte-probe.invalid >/dev/null 2>&1
+        return $?
+    fi
+    if command -v getent >/dev/null 2>&1; then
+        return 0   # pas d'outil de sonde : on s'en tient au controle de processus
+    fi
+    return 0
+}
+
+verifier_resolveur() {
+    if blocker_unit_active blocker-resolver.service; then
+        if ! resolver_repond; then
+            blocker_repair "blocker-resolver.service actif mais ne repond pas, redemarrage"
+            systemctl restart blocker-resolver.service || \
+                blocker_err "redemarrage de blocker-resolver.service en echec"
+        fi
+        return 0
+    fi
+
+    resolver_restarts=$((resolver_restarts + 1))
+    blocker_repair "blocker-resolver.service inactif, relance par la garde (relance n°${resolver_restarts})"
+    if systemctl start blocker-resolver.service; then
+        blocker_info "blocker-resolver.service relance avec succes"
+    else
+        blocker_err "la relance de blocker-resolver.service a echoue — voir journalctl -u blocker-resolver"
+    fi
+}
+
+verifier_nftables() {
+    if ! /usr/lib/blocker-adulte/blocker-apply-nftables --check >/dev/null 2>&1; then
+        blocker_repair "regles nftables absentes ou alterees, rechargement"
+        /usr/lib/blocker-adulte/blocker-apply-nftables --force || \
+            blocker_err "rechargement des regles nftables en echec"
+    fi
+}
+
+verifier_policies() {
+    local manquant=0 f
+    while IFS='|' read -r dir filename _family; do
+        [ -n "${dir}" ] || continue
+        [ -d "${dir}" ] || continue      # navigateur absent : rien a verifier
+        f="${dir}/${filename}"
+        [ -s "${f}" ] || manquant=1
+    done < <(blocker_browser_targets)
+
+    if [ "${manquant}" -eq 1 ]; then
+        blocker_repair "au moins une policy navigateur manque, redeploiement"
+        /usr/lib/blocker-adulte/blocker-apply-policies || \
+            blocker_err "redeploiement des policies en echec"
+    fi
+}
+
+verifier_resolved() {
+    local dropin="/etc/systemd/resolved.conf.d/blocker-adulte.conf"
+    if [ ! -s "${dropin}" ]; then
+        blocker_repair "drop-in systemd-resolved manquant, reecriture"
+        blocker_install_protected \
+            "${BLOCKER_SHAREDIR}/conf/resolved-blocker-adulte.conf" "${dropin}"
+        systemctl restart systemd-resolved.service 2>/dev/null || true
+    fi
+}
+
+trap 'blocker_info "arret demande, sortie de la boucle de garde"; exit 0' TERM INT
+
+while true; do
+    blocker_watchdog_ping
+    pass=$((pass + 1))
+
+    if blocker_stand_down_if_optout; then
+        blocker_notify_status "retrait volontaire en cours : garde en veille"
+        # On ne quitte pas : si l'utilisateur annule sa desinstallation en
+        # supprimant le drapeau, la garde reprend d'elle-meme.
+        blocker_sleep "${BLOCKER_GUARD_INTERVAL}"
+        continue
+    fi
+
+    verifier_resolveur
+    verifier_nftables
+    verifier_policies
+    verifier_resolved
+
+    blocker_notify_status "passe ${pass} : resolveur, nftables, policies et resolved verifies"
+
+    # Bilan periodique dans le journal, meme quand tout va bien : un watchdog
+    # muet est indiscernable d'un watchdog mort.
+    if [ $((pass % 40)) -eq 0 ]; then
+        blocker_info "bilan : ${pass} passes, ${resolver_restarts} relance(s) du resolveur"
+    fi
+
+    blocker_sleep "${BLOCKER_GUARD_INTERVAL}"
+done

@@ -1,0 +1,150 @@
+#!/bin/bash
+# blocker-adulte — passe de self-heal (composant 7)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-selfheal
+# Lance par     : blocker-selfheal.timer (toutes les 5 minutes)
+#
+# Contrairement a blocker-guard, ce script ne tourne pas en boucle : il fait une
+# passe complete puis se termine. C'est la redondance du composant 6 — si les
+# deux services sont arretes en meme temps, le timer les remet en route.
+#
+# Il journalise systematiquement un compte-rendu, meme quand rien n'a bouge, et
+# journalise separement chaque ecart corrige (« REPARATION: ... »).
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+blocker_ensure_rundir
+
+if blocker_stand_down_if_optout; then
+    exit 0
+fi
+
+ecarts=0
+note() { ecarts=$((ecarts + 1)); blocker_repair "$*"; }
+
+# ---------------------------------------------------------------------------
+# 1. Immuabilite des fichiers proteges
+# ---------------------------------------------------------------------------
+# blocker_lock_file journalise lui-meme chaque « chattr +i » reapplique.
+avant="$(mktemp)"; apres="$(mktemp)"
+trap 'rm -f "${avant}" "${apres}"' EXIT
+
+while IFS= read -r f; do
+    [ -e "$f" ] || continue
+    lsattr -d "$f" 2>/dev/null | awk '{print $1}' >> "${avant}"
+done < <(blocker_protected_files)
+
+blocker_lock_all
+
+while IFS= read -r f; do
+    [ -e "$f" ] || continue
+    lsattr -d "$f" 2>/dev/null | awk '{print $1}' >> "${apres}"
+done < <(blocker_protected_files)
+
+if ! cmp -s "${avant}" "${apres}"; then
+    ecarts=$((ecarts + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Fichiers de configuration manquants ou modifies
+# ---------------------------------------------------------------------------
+verifier_fichier() {
+    local modele="$1" cible="$2" mode="${3:-0644}"
+    [ -r "${modele}" ] || return 0
+    if [ ! -e "${cible}" ]; then
+        note "fichier absent, reinstalle : ${cible}"
+        blocker_install_protected "${modele}" "${cible}" "${mode}"
+        return 0
+    fi
+    if ! cmp -s "${modele}" "${cible}"; then
+        note "fichier modifie, restaure depuis le modele : ${cible}"
+        blocker_install_protected "${modele}" "${cible}" "${mode}"
+    fi
+}
+
+verifier_fichier "${BLOCKER_SHAREDIR}/conf/dnsmasq-blocker-adulte.conf" \
+                 "/etc/dnsmasq.d/blocker-adulte.conf"
+verifier_fichier "${BLOCKER_SHAREDIR}/conf/nftables-blocker-adulte.nft" \
+                 "/etc/nftables/blocker-adulte.nft"
+verifier_fichier "${BLOCKER_SHAREDIR}/conf/resolved-blocker-adulte.conf" \
+                 "/etc/systemd/resolved.conf.d/blocker-adulte.conf"
+verifier_fichier "${BLOCKER_SHAREDIR}/conf/90-blocker-adulte" \
+                 "/etc/NetworkManager/dispatcher.d/90-blocker-adulte" 0755
+
+# ---------------------------------------------------------------------------
+# 3. Les quatre familles de policies navigateur
+# ---------------------------------------------------------------------------
+policies_avant=0
+while IFS='|' read -r dir filename _f; do
+    [ -n "${dir}" ] || continue
+    [ -s "${dir}/${filename}" ] && policies_avant=$((policies_avant + 1))
+done < <(blocker_browser_targets)
+
+/usr/lib/blocker-adulte/blocker-apply-policies >/dev/null 2>&1 || \
+    blocker_warn "blocker-apply-policies a signale une erreur"
+
+policies_apres=0
+while IFS='|' read -r dir filename _f; do
+    [ -n "${dir}" ] || continue
+    [ -s "${dir}/${filename}" ] && policies_apres=$((policies_apres + 1))
+done < <(blocker_browser_targets)
+
+if [ "${policies_apres}" -gt "${policies_avant}" ]; then
+    note "policies navigateur redeployees (${policies_avant} -> ${policies_apres} fichiers en place)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Regles nftables actives vs attendues
+# ---------------------------------------------------------------------------
+if ! /usr/lib/blocker-adulte/blocker-apply-nftables --check >/dev/null 2>&1; then
+    note "regles nftables non conformes, rechargement"
+    /usr/lib/blocker-adulte/blocker-apply-nftables --force >/dev/null 2>&1 || \
+        blocker_err "rechargement nftables en echec"
+fi
+
+# Ligne d'inclusion dans /etc/nftables.conf (persistance au boot)
+if [ -e /etc/nftables.conf ] && ! grep -qF 'blocker-adulte.nft' /etc/nftables.conf; then
+    note "ligne d'inclusion absente de /etc/nftables.conf, reajoutee"
+    printf '\n# blocker-adulte (composant 2)\ninclude "/etc/nftables/blocker-adulte.nft"\n' \
+        >> /etc/nftables.conf
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Les deux services de surveillance croisee
+# ---------------------------------------------------------------------------
+for unite in blocker-resolver.service blocker-guard.service; do
+    if ! blocker_unit_active "${unite}"; then
+        note "${unite} inactif, relance par le self-heal"
+        systemctl start "${unite}" || blocker_err "relance de ${unite} en echec"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# 6. Hook initramfs
+# ---------------------------------------------------------------------------
+# On verifie la presence du hook mais on ne regenere PAS l'initramfs
+# automatiquement : « update-initramfs -u » toutes les 5 minutes userait le
+# disque pour rien et masquerait les vraies mises a jour de noyau. Un ecart est
+# signale, la correction est manuelle et documentee dans le README.
+if [ -d /etc/initramfs-tools ]; then
+    for h in /etc/initramfs-tools/hooks/blocker-adulte \
+             /etc/initramfs-tools/scripts/init-bottom/blocker-adulte; do
+        if [ ! -x "$h" ]; then
+            note "hook initramfs manquant : $h — le reinstaller puis lancer « update-initramfs -u »"
+        fi
+    done
+fi
+
+# ---------------------------------------------------------------------------
+# Compte-rendu
+# ---------------------------------------------------------------------------
+if [ "${ecarts}" -eq 0 ]; then
+    blocker_info "self-heal : aucun ecart detecte"
+else
+    blocker_notice "self-heal : ${ecarts} ecart(s) detecte(s) et corrige(s), detail ci-dessus"
+fi
+
+exit 0
