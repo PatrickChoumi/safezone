@@ -1,0 +1,354 @@
+#!/bin/bash
+# blocker-adulte — etat complet de l'outil
+#
+# Installe dans : /usr/sbin/blocker-status  (lisible sans etre root)
+#
+# Repond en une commande a : « est-ce que ca marche, la, maintenant ? »
+#
+# Le rapport dit aussi ce qui NE protege PAS : un composant inactif, un trou
+# ouvert, une liste jamais mise a jour. Un outil de ce genre qui afficherait
+# seulement ses reussites donnerait une fausse assurance, ce qui est pire que
+# pas d'outil du tout.
+#
+# Usage :
+#   blocker-status              rapport complet
+#   blocker-status --court      une ligne de resume
+#   blocker-status --sonde      teste en direct quelques domaines
+#   blocker-status --trous      uniquement ce qui ne protege pas
+
+set -uo pipefail
+
+LIB=/usr/lib/blocker-adulte/blocker-common.sh
+if [ -r "${LIB}" ]; then
+    # shellcheck disable=SC1090
+    . "${LIB}"
+else
+    echo "blocker-adulte n'est pas installe sur cette machine." >&2
+    exit 1
+fi
+
+MODE="complet"
+case "${1:-}" in
+    --court)  MODE="court" ;;
+    --sonde)  MODE="sonde" ;;
+    --trous)  MODE="trous" ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    "") ;;
+    *) echo "Argument inconnu : $1" >&2; exit 2 ;;
+esac
+
+if [ -t 1 ]; then
+    VERT=$'\033[32m'; ROUGE=$'\033[31m'; JAUNE=$'\033[33m'
+    GRAS=$'\033[1m'; GRIS=$'\033[90m'; Z=$'\033[0m'
+else
+    VERT=""; ROUGE=""; JAUNE=""; GRAS=""; GRIS=""; Z=""
+fi
+
+actifs=0; inactifs=0; degrades=0
+TROUS=()
+
+titre() { printf '\n%s%s%s\n' "${GRAS}" "$1" "${Z}"; }
+ligne() { printf '  %s %-34s %s\n' "$1" "$2" "${3:-}"; }
+ok()    { actifs=$((actifs + 1));     ligne "${VERT}●${Z}" "$1" "$2"; }
+ko()    { inactifs=$((inactifs + 1)); ligne "${ROUGE}●${Z}" "$1" "$2"; }
+moyen() { degrades=$((degrades + 1)); ligne "${JAUNE}●${Z}" "$1" "$2"; }
+detail(){ printf '     %s%s%s\n' "${GRIS}" "$*" "${Z}"; }
+trou()  { TROUS+=("$1"); }
+
+systemd_dispo() { [ -d /run/systemd/system ]; }
+
+service_tourne() {
+    if systemd_dispo; then
+        systemctl is-active --quiet "$1" 2>/dev/null && return 0
+        return 1
+    fi
+    # Hors systemd, on se rabat sur le processus.
+    [ -n "${2:-}" ] && pidof "$2" >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Sondes DNS reelles
+# ---------------------------------------------------------------------------
+sonde_bloque() {
+    command -v dig >/dev/null 2>&1 || return 2
+    local r
+    r="$(dig +short +time=2 +tries=1 "@${BLOCKER_LISTEN_ADDR}" "$1" 2>/dev/null | head -1)"
+    case "${r}" in
+        ""|0.0.0.0|::|127.0.0.1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+sonde_safesearch() {
+    command -v dig >/dev/null 2>&1 || return 2
+    local obtenu attendu
+    obtenu="$(dig +short +time=2 +tries=1 "@${BLOCKER_LISTEN_ADDR}" "$1" 2>/dev/null \
+              | grep -E '^[0-9.]+$' | sort | head -1)"
+    attendu="$(grep "^address=/$1/" "${BLOCKER_STATEDIR}/blocklists/05-safesearch.conf" 2>/dev/null \
+               | sed 's|.*/||' | grep -E '^[0-9.]+$' | sort | head -1)"
+    [ -n "${obtenu}" ] && [ -n "${attendu}" ] && [ "${obtenu}" = "${attendu}" ]
+}
+
+# ---------------------------------------------------------------------------
+# Mode sonde
+# ---------------------------------------------------------------------------
+if [ "${MODE}" = "sonde" ]; then
+    titre "Sondes en direct"
+    if ! command -v dig >/dev/null 2>&1; then
+        echo "  dig est requis (paquet dnsutils)." >&2
+        exit 1
+    fi
+
+    printf '\n  %sDomaines de contournement (doivent etre bloques)%s\n' "${GRAS}" "${Z}"
+    for d in dns.google cloudflare-dns.com nordvpn.com torproject.org; do
+        if sonde_bloque "${d}"; then ok "${d}" "bloque"; else ko "${d}" "RESOUT"; fi
+    done
+
+    printf '\n  %sSafeSearch (doivent pointer vers la variante stricte)%s\n' "${GRAS}" "${Z}"
+    for d in www.google.com www.youtube.com www.bing.com duckduckgo.com; do
+        if sonde_safesearch "${d}"; then ok "${d}" "force"; else ko "${d}" "NON force"; fi
+    done
+
+    printf '\n  %sServices legitimes (ne doivent PAS etre casses)%s\n' "${GRAS}" "${Z}"
+    for d in mail.google.com wikipedia.org github.com; do
+        if sonde_bloque "${d}"; then ko "${d}" "BLOQUE A TORT"; else ok "${d}" "accessible"; fi
+    done
+
+    printf '\n'
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Etat des huit composants
+# ---------------------------------------------------------------------------
+if [ "${MODE}" != "trous" ]; then
+    printf '%sblocker-adulte — etat%s\n' "${GRAS}" "${Z}"
+    printf '%s%s%s\n' "${GRIS}" "$(date '+%A %d %B %Y, %H:%M')" "${Z}"
+    titre "Les huit composants"
+fi
+
+# --- 1. Resolveur -----------------------------------------------------------
+if service_tourne blocker-resolver.service dnsmasq; then
+    if sonde_bloque dns.google; then
+        ok "1. Resolveur DNS local" "actif, filtre"
+    else
+        moyen "1. Resolveur DNS local" "actif mais ne filtre pas"
+        trou "Le resolveur tourne mais ne bloque pas : listes vides ou non chargees."
+    fi
+    nb=$(cat "${BLOCKER_STATEDIR}"/blocklists/*.conf 2>/dev/null | grep -c '^address=/' || true)
+    detail "${nb} domaines dans les listes"
+    recent="$(find "${BLOCKER_STATEDIR}/blocklists" -name '[1-9][0-9]-*.conf' -mtime -8 2>/dev/null | head -1)"
+    if [ -z "${recent}" ]; then
+        detail "listes telechargees jamais mises a jour depuis plus de 8 jours"
+        trou "Listes de blocage anciennes : sudo systemctl start blocker-list-update.service"
+    fi
+else
+    ko "1. Resolveur DNS local" "ARRETE"
+    trou "Le resolveur est arrete : plus aucun filtrage DNS."
+fi
+
+# --- 2. Application reseau --------------------------------------------------
+if command -v nft >/dev/null 2>&1 && \
+   nft list table ip blocker_adulte_nat >/dev/null 2>&1; then
+    regles="$(nft list table ip blocker_adulte_nat 2>/dev/null)"
+    case "${regles}" in
+        *"dport 53"*) ok "2. Redirection DNS (nftables)" "active" ;;
+        *) moyen "2. Redirection DNS (nftables)" "table vide" ;;
+    esac
+    case "${regles}" in
+        *5353*) detail "ports alternatifs couverts (1053, 5053, 5300, 5335, 5353, 5453, 8053, 15353)" ;;
+        *) detail "seul le port 53 est couvert" ;;
+    esac
+else
+    ko "2. Redirection DNS (nftables)" "ABSENTE"
+    trou "Regles nftables absentes : le DNS peut sortir vers n'importe quel serveur."
+fi
+
+# --- 3. Policies navigateur -------------------------------------------------
+nb_pol=0; nb_attendu=0
+while IFS='|' read -r dir fichier _f; do
+    [ -n "${dir}" ] || continue
+    [ -d "${dir}" ] || continue
+    nb_attendu=$((nb_attendu + 1))
+    [ -s "${dir}/${fichier}" ] && nb_pol=$((nb_pol + 1))
+done < <(blocker_browser_targets)
+
+if [ "${nb_attendu}" -eq 0 ]; then
+    moyen "3. Policies navigateur" "aucun navigateur detecte"
+elif [ "${nb_pol}" -eq "${nb_attendu}" ]; then
+    ok "3. Policies navigateur" "${nb_pol}/${nb_attendu} en place"
+else
+    moyen "3. Policies navigateur" "${nb_pol}/${nb_attendu} en place"
+    trou "Policies navigateur incompletes : sudo /usr/lib/blocker-adulte/blocker-apply-policies"
+fi
+
+# --- 4. Hook initramfs ------------------------------------------------------
+if [ -x /etc/initramfs-tools/hooks/blocker-adulte ]; then
+    if nft list table ip blocker_adulte_base_nat >/dev/null 2>&1; then
+        ok "4. Hook initramfs" "installe, regles de base chargees"
+    else
+        moyen "4. Hook initramfs" "installe, regles de base non chargees"
+        detail "normal si l'initramfs a ete regenere depuis le dernier demarrage"
+    fi
+elif [ -d /etc/initramfs-tools ]; then
+    ko "4. Hook initramfs" "ABSENT"
+    trou "Hook initramfs absent : aucune protection en mode recovery."
+else
+    moyen "4. Hook initramfs" "initramfs-tools non installe"
+fi
+
+# --- 5. Hooks dpkg ----------------------------------------------------------
+if dpkg-query -W -f='${Status}' blocker-adulte 2>/dev/null | grep -q 'install ok installed'; then
+    if grep -q 'blocker-adulte' /var/lib/dpkg/triggers/File 2>/dev/null; then
+        ok "5. Triggers dpkg" "enregistres"
+    else
+        moyen "5. Triggers dpkg" "paquet installe, triggers absents"
+    fi
+else
+    moyen "5. Triggers dpkg" "installation hors paquet .deb"
+    detail "reinstaller un navigateur ne redeploie pas sa policy immediatement ;"
+    detail "le self-heal s'en charge sous 5 minutes"
+fi
+
+# --- 6. Surveillance croisee ------------------------------------------------
+if systemd_dispo; then
+    g=$(systemctl is-active blocker-guard.service 2>/dev/null)
+    r=$(systemctl is-active blocker-resolver.service 2>/dev/null)
+    if [ "${g}" = "active" ] && [ "${r}" = "active" ]; then
+        ok "6. Surveillance croisee" "les deux services tournent"
+    elif [ "${g}" = "active" ] || [ "${r}" = "active" ]; then
+        moyen "6. Surveillance croisee" "un seul service actif (garde=${g}, resolveur=${r})"
+    else
+        ko "6. Surveillance croisee" "les deux services sont arretes"
+        trou "Les deux watchdogs sont arretes : plus aucune auto-reparation."
+    fi
+else
+    moyen "6. Surveillance croisee" "systemd absent, non verifiable"
+fi
+
+# --- 7. Self-heal -----------------------------------------------------------
+if systemd_dispo && systemctl is-active --quiet blocker-selfheal.timer 2>/dev/null; then
+    ok "7. Timer de self-heal" "arme"
+    prochaine="$(systemctl show blocker-selfheal.timer -p NextElapseUSecRealtime --value 2>/dev/null)"
+    [ -n "${prochaine}" ] && detail "prochaine passe : ${prochaine}"
+elif systemd_dispo; then
+    ko "7. Timer de self-heal" "DESARME"
+    trou "Le self-heal est desarme : plus de reparation periodique."
+else
+    moyen "7. Timer de self-heal" "systemd absent, non verifiable"
+fi
+
+# --- 8. auditd --------------------------------------------------------------
+if [ -e /etc/audit/rules.d/blocker-adulte.rules ]; then
+    if command -v auditctl >/dev/null 2>&1; then
+        nb_regles=$(auditctl -l 2>/dev/null | grep -c blocker-adulte || true)
+        etat_audit=$(auditctl -s 2>/dev/null | awk '/^enabled/{print $2}')
+        if [ "${nb_regles}" -gt 0 ] && [ "${etat_audit}" = "1" ]; then
+            ok "8. Journalisation auditd" "${nb_regles} regles actives"
+        elif [ "${nb_regles}" -gt 0 ]; then
+            moyen "8. Journalisation auditd" "regles chargees, audit noyau desactive"
+            trou "auditd ne collecte rien : le noyau a demarre avec l'audit desactive."
+        else
+            moyen "8. Journalisation auditd" "regles non chargees"
+        fi
+    else
+        moyen "8. Journalisation auditd" "auditctl absent"
+    fi
+else
+    moyen "8. Journalisation auditd" "regles non installees"
+fi
+
+# ---------------------------------------------------------------------------
+# SafeSearch
+# ---------------------------------------------------------------------------
+if [ "${MODE}" != "trous" ]; then
+    titre "SafeSearch force"
+    FS="${BLOCKER_STATEDIR}/blocklists/05-safesearch.conf"
+    if [ -s "${FS}" ]; then
+        nb_ss=$(grep -c '^address=' "${FS}" 2>/dev/null || true)
+        age=$(( ( $(date +%s) - $(stat -c %Y "${FS}" 2>/dev/null || echo 0) ) / 86400 ))
+        actifs_ss=0; total_ss=0
+        for d in www.google.com www.youtube.com www.bing.com duckduckgo.com; do
+            grep -q "^address=/${d}/" "${FS}" 2>/dev/null || continue
+            total_ss=$((total_ss + 1))
+            sonde_safesearch "${d}" && actifs_ss=$((actifs_ss + 1))
+        done
+        if [ "${total_ss}" -gt 0 ] && [ "${actifs_ss}" -eq "${total_ss}" ]; then
+            ok "Google, YouTube, Bing, DuckDuckGo" "verrouilles en mode strict"
+        elif [ "${actifs_ss}" -gt 0 ]; then
+            moyen "SafeSearch" "${actifs_ss}/${total_ss} moteurs effectivement forces"
+            trou "SafeSearch partiellement applique : redemarrer blocker-resolver.service."
+        else
+            ko "SafeSearch" "fichier present mais non applique"
+            trou "SafeSearch non applique : sudo systemctl restart blocker-resolver.service"
+        fi
+        detail "${nb_ss} redirections, mises a jour il y a ${age} jour(s)"
+    else
+        case "${BLOCKER_SAFESEARCH:-oui}" in
+            non|no|0) moyen "SafeSearch" "desactive par configuration" ;;
+            *)
+                ko "SafeSearch" "NON CONFIGURE"
+                trou "SafeSearch absent : Google Images et YouTube ne sont pas filtres."
+                detail "corriger : sudo /usr/lib/blocker-adulte/blocker-safesearch"
+                ;;
+        esac
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Trous connus
+# ---------------------------------------------------------------------------
+if blocker_hosts_verrouillable; then
+    :
+else
+    trou "/etc/hosts n'est pas verrouille : une ligne y contourne tout le filtrage."
+fi
+
+if [ "${MODE}" != "trous" ]; then
+    titre "Reparations recentes"
+    if systemd_dispo && command -v journalctl >/dev/null 2>&1; then
+        n=$(journalctl -u blocker-guard -u blocker-selfheal --since '24 hours ago' \
+            --no-pager 2>/dev/null | grep -c 'REPARATION' || true)
+        if [ "${n}" -eq 0 ]; then
+            printf '  Aucune sur les dernieres 24 h.\n'
+        else
+            printf '  %d sur les dernieres 24 h. Les trois dernieres :\n' "${n}"
+            journalctl -u blocker-guard -u blocker-selfheal --since '24 hours ago' \
+                --no-pager 2>/dev/null | grep 'REPARATION' | tail -3 \
+                | sed "s/^/     ${GRIS}/;s/$/${Z}/"
+        fi
+    else
+        printf '  journal indisponible (systemd absent).\n'
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Synthese
+# ---------------------------------------------------------------------------
+titre "Ce qui ne protege pas"
+if [ "${#TROUS[@]}" -eq 0 ]; then
+    printf '  Rien a signaler : les huit composants sont operationnels.\n'
+else
+    for t in "${TROUS[@]}"; do
+        printf '  %s!%s %s\n' "${JAUNE}" "${Z}" "${t}"
+    done
+fi
+
+printf '\n  %sLimites permanentes%s — elles ne disparaitront pas, par conception :\n' "${GRIS}" "${Z}"
+printf '  %s- un acces root suffit a tout retirer, en quatre phases documentees%s\n' "${GRIS}" "${Z}"
+printf '  %s- un live USB ou un autre systeme contourne tout%s\n' "${GRIS}" "${Z}"
+printf '  %s- l acces direct par adresse IP echappe a tout filtrage DNS%s\n' "${GRIS}" "${Z}"
+printf '  %s- un endpoint DoH prive sur une IP inconnue passerait%s\n' "${GRIS}" "${Z}"
+
+printf '\n'
+if [ "${inactifs}" -eq 0 ] && [ "${degrades}" -eq 0 ]; then
+    printf '  %s%d composants operationnels.%s\n\n' "${VERT}" "${actifs}" "${Z}"
+    exit 0
+elif [ "${inactifs}" -eq 0 ]; then
+    printf '  %s%d operationnels, %d en mode degrade.%s\n\n' "${JAUNE}" "${actifs}" "${degrades}" "${Z}"
+    exit 0
+else
+    printf '  %s%d operationnels, %d degrades, %d hors service.%s\n\n' \
+        "${ROUGE}" "${actifs}" "${degrades}" "${inactifs}" "${Z}"
+    exit 1
+fi

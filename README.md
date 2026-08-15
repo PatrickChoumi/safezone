@@ -8,6 +8,18 @@ retrait demande de **savoir ce qu'on fait, où, et dans quel ordre** — ce qui
 suffit à écarter la désactivation impulsive, sans jamais transformer la machine
 en boîte noire.
 
+**Aucune commande ne retire tout.** Le retrait se fait en
+[quatre phases](#désinstallation), soit huit commandes, avec un jeton tiré au
+hasard à chaque étape. Ce n'est ni une minuterie ni un piège : la procédure
+manuelle équivalente est affichable à tout moment par `blocker-uninstall --manuel`.
+
+Deux commandes à retenir :
+
+```bash
+blocker-status              # est-ce que ça marche, là, maintenant ?
+blocker-status --sonde      # le vérifier par de vraies requêtes DNS
+```
+
 ---
 
 ## Sommaire
@@ -16,6 +28,7 @@ en boîte noire.
 - [Les huit composants](#les-huit-composants)
 - [Installation](#installation)
 - [Manifeste : tous les emplacements](#manifeste--tous-les-emplacements)
+- [Savoir où on en est : blocker-status](#savoir-où-on-en-est--blocker-status)
 - [Désinstallation](#désinstallation)
 - [Vérifier que tout fonctionne](#vérifier-que-tout-fonctionne)
 - [Observer l'outil au travail](#observer-loutil-au-travail)
@@ -71,7 +84,7 @@ l'utilisateur qui l'annonce, et l'outil s'écarte.
 
 | # | Composant | Rôle | Se relève grâce à |
 |---|---|---|---|
-| 1 | **Résolveur DNS local** | `dnsmasq` sur `127.0.0.1:53`, listes StevenBlack *porn-only* + Hagezi *doh-vpn-proxy-bypass*, amont filtrant en secours | 6, 7 |
+| 1 | **Résolveur DNS local** | `dnsmasq` sur `127.0.0.1:53`, listes StevenBlack *porn-only* + Hagezi *doh-vpn-proxy-bypass*, **SafeSearch forcé**, amont filtrant en secours | 6, 7 |
 | 2 | **Application réseau forcée** | `systemd-resolved` → `127.0.0.1`, DNAT nftables du port 53, rejet DoT/DoQ/DoH, dispatcher NetworkManager | 4, 6, 7 |
 | 3 | **Policies navigateur** | Un fichier indépendant par navigateur détecté (Firefox, Chrome, Chromium, Brave) | 5, 6, 7 |
 | 4 | **Hook initramfs** | Règles nftables de base chargées avant le montage de la racine, actives en mode recovery | — (regénéré à l'installation) |
@@ -94,6 +107,56 @@ de DNS serait le plus sûr moyen de pousser à tout désinstaller.
 
 `filter-rr=65` bloque les enregistrements HTTPS/SVCB, qui annoncent aux
 navigateurs les points d'accès DoH disponibles.
+
+#### SafeSearch forcé — la mesure la plus efficace de l'outil
+
+Une liste de blocage ne peut rien contre **Google Images, YouTube ou Bing** : ce
+sont des domaines qu'on ne peut pas bloquer sans rendre la machine inutilisable,
+et ils servent pourtant du contenu adulte à la demande. C'est le trou par lequel
+passe l'essentiel de ce qu'un filtre DNS classique laisse échapper.
+
+Tous ces moteurs exposent un nom d'hôte « verrouillé en mode strict ». Faire
+résoudre `www.google.com` vers l'adresse de `forcesafesearch.google.com` force
+donc le SafeSearch **au niveau du réseau** :
+
+- impossible à désactiver depuis les préférences du navigateur ou du compte ;
+- valable pour **tous** les navigateurs et toutes les applications d'un coup,
+  y compris ceux qui ignorent les policies (`curl`, un client tiers, un profil
+  portable) ;
+- indépendant du fait d'être connecté ou non à un compte Google.
+
+| Moteur | Redirigé vers | Domaines couverts |
+|---|---|---|
+| Google | `forcesafesearch.google.com` | `www.google.com` + 38 domaines nationaux |
+| YouTube | `restrict.youtube.com` | `www.youtube.com`, `m.youtube.com`, `youtube.com`, les API |
+| Bing | `strict.bing.com` | `www.bing.com`, `bing.com`, `cn.bing.com` |
+| DuckDuckGo | `safe.duckduckgo.com` | `duckduckgo.com` et ses sous-domaines de recherche |
+| Yandex | `familysearch.yandex.ru` | `yandex.com`, `yandex.ru` |
+| Pixabay | `safesearch.pixabay.com` | `pixabay.com` |
+
+**Les adresses ne sont jamais codées en dur** : `blocker-safesearch` les résout à
+chaque mise à jour quotidienne. Si la résolution échoue, le fichier en place est
+conservé — jamais de retour silencieux à « pas de SafeSearch ».
+
+**Ce qui n'est délibérément pas touché.** Seuls les hôtes de recherche sont
+redirigés, jamais un domaine nu. Rediriger `google.com` s'appliquerait à *tous*
+ses sous-domaines et casserait Gmail, Drive, Agenda et l'authentification.
+`tests/test_safesearch.sh` vérifie explicitement que ces six services répondent
+normalement.
+
+Désactivable par `BLOCKER_SAFESEARCH="non"` dans `/etc/blocker-adulte/blocker.conf`.
+
+Vérification :
+
+```bash
+sudo blocker-status --sonde
+dig +short @127.0.0.1 www.google.com    # doit donner l'IP de forcesafesearch
+```
+
+Un détail qui compte : après régénération du fichier, un `SIGHUP` **ne suffit
+pas**. dnsmasq relit ses fichiers `hosts` sur `HUP`, mais pas les directives
+`address=` d'un `conf-dir`. Il faut un vrai
+`systemctl restart blocker-resolver.service` — ce que fait la mise à jour.
 
 ### 2. Application réseau forcée
 
@@ -281,9 +344,12 @@ existe sans être déclaré ici.
 /usr/lib/blocker-adulte/blocker-resolver-run
 /usr/lib/blocker-adulte/blocker-selfheal
 /usr/lib/blocker-adulte/blocker-list-update
+/usr/lib/blocker-adulte/blocker-safesearch
+/usr/lib/blocker-adulte/blocker-doh-refresh
 /usr/lib/blocker-adulte/blocker-apply-policies
 /usr/lib/blocker-adulte/blocker-apply-nftables
 /usr/sbin/blocker-uninstall
+/usr/sbin/blocker-status
 
 # --- Modèles, listes, tests, documentation ---
 /usr/share/blocker-adulte
@@ -374,191 +440,124 @@ ce que nous installons. Le test les tolère explicitement :
 
 ---
 
+## Savoir où on en est : blocker-status
+
+Un outil de ce genre qui n'afficherait que ses réussites donnerait une fausse
+assurance — pire que pas d'outil du tout. `blocker-status` répond en une commande
+à « est-ce que ça marche, là, maintenant ? », **et dit ce qui ne protège pas**.
+
+```bash
+blocker-status            # rapport complet, lisible sans être root
+blocker-status --sonde    # teste en direct des domaines réels
+blocker-status --trous    # uniquement ce qui ne protège pas
+```
+
+Le rapport donne l'état des huit composants, l'état du SafeSearch vérifié **par
+une résolution réelle** (pas seulement par la présence du fichier), le nombre de
+domaines en liste, l'âge des listes, les réparations des dernières 24 h, et deux
+sections franches :
+
+- **« Ce qui ne protège pas »** : composant arrêté, listes périmées, `/etc/hosts`
+  non verrouillé, auditd qui ne collecte rien, policies incomplètes — avec la
+  commande exacte pour corriger.
+- **« Limites permanentes »** : ce qui ne disparaîtra jamais, par conception.
+
+Le code de sortie vaut `0` si tout est opérationnel ou dégradé, `1` si un
+composant est hors service — utilisable dans un script de vérification.
+
+`--sonde` est le contrôle le plus parlant : il interroge réellement le résolveur
+sur des domaines de contournement (doivent être bloqués), sur les moteurs de
+recherche (doivent être en mode strict) et sur des services légitimes (ne doivent
+**pas** être cassés).
+
+---
+
 ## Désinstallation
 
-### Le script
+### Il n'y a pas de commande unique
+
+C'est le point central de la conception, et il est délibéré : **aucune commande
+ne retire tout**. Le retrait se fait en quatre phases, chacune demandant deux
+commandes — une pour voir ce qu'elle fera et obtenir un jeton, une pour
+l'exécuter avec ce jeton. Huit commandes au total, et il faut lire l'écran à
+chaque fois puisque **le jeton est tiré au hasard à chaque affichage** : aucun
+script préparé à l'avance ne peut enchaîner les phases.
 
 ```bash
-sudo blocker-uninstall --dry-run     # affiche les huit étapes, ne fait rien
-sudo blocker-uninstall --confirm     # exécute
+sudo blocker-uninstall --etat       # où en est-on
+sudo blocker-uninstall --phase 1    # ce que la phase fera + son jeton
+sudo blocker-uninstall --phase 1 --jeton A7K2M9
 ```
 
-`--confirm` n'est **pas** un délai de réflexion : c'est une garde contre un
-`rm -rf` ou une complétion malheureuse qui laisserait la machine sans DNS ou
-avec des fichiers immuables que plus rien ne saurait déverrouiller. Le script
-n'est jamais appelé automatiquement et reste fonctionnel en toutes
-circonstances.
+### Ce que ce découpage n'est pas
 
-Il se termine par une vérification et signale tout résidu.
+| Ce n'est pas… | Pourquoi |
+|---|---|
+| **une minuterie** | Aucune phase ne fait attendre. Qui veut aller au bout y va tout de suite — il faut simplement le vouloir huit fois de suite. |
+| **un piège** | Les quatre phases fonctionnent jusqu'au retrait complet, et `--manuel` affiche la procédure équivalente qui n'utilise pas ce script du tout. |
+| **un état caché** | L'avancement est **déduit de l'état réel du système**, pas d'un fichier compteur. Redémarrer, sauter une phase ou en refaire une déjà faite ne peut pas coincer la désinstallation. |
 
-### La procédure manuelle, étape par étape
+`tests/test_uninstall_phases.sh` vérifie les deux moitiés de cette promesse : que
+c'est pénible (pas de raccourci, ordre imposé, jeton non rejouable) **et** que ce
+n'est pas un piège (procédure manuelle complète, aucun fichier compteur).
 
-Le script ci-dessus **exécute exactement ces huit étapes**. Les suivre à la main
-donne le même résultat.
+### Les quatre phases
 
-L'ordre compte : les deux watchdogs se relancent mutuellement, et le drapeau de
-retrait volontaire doit être posé en premier, sinon les étapes suivantes seront
-défaites au fur et à mesure.
+| Phase | Ce qu'elle fait | Effet visible |
+|---|---|---|
+| **1** | Pose le drapeau de retrait, désactive puis arrête `blocker-guard` **d'abord** (c'est elle qui relance le résolveur), puis `blocker-resolver`, puis les deux timers | Le filtrage s'arrête. Les règles nftables pointent encore vers un résolveur éteint : **la résolution DNS est cassée jusqu'à la phase 4.** C'est normal et temporaire. |
+| **2** | `chattr -i` sur chaque fichier protégé | Sans elle, ni `apt` ni `rm` ne peuvent supprimer ces fichiers |
+| **3** | `apt purge` (ou suppression manuelle), les 4 policies navigateur, les liens d'activation systemd pendants | Le paquet et les policies disparaissent |
+| **4** | Hook initramfs + `update-initramfs -u`, tables nftables chargées en mémoire, ligne d'inclusion, règles auditd, utilisateur système | **La résolution DNS redevient normale** |
 
-#### Étape 0 — annoncer le retrait volontaire
+La phase 1 casse volontairement le DNS jusqu'à la phase 4. C'est la conséquence
+directe du fait que les règles nftables sont un état du noyau qui survit à
+l'arrêt du résolveur — et c'est annoncé à l'écran avant d'exécuter la phase.
+Une désinstallation abandonnée en cours de route se rattrape soit en allant au
+bout, soit en relançant les services :
 
 ```bash
-sudo mkdir -p /run/blocker-adulte
-echo "désinstallation manuelle $(date -Is)" | sudo tee /run/blocker-adulte/uninstall-in-progress
-sleep 20    # laisser les boucles voir le drapeau
+sudo systemctl enable --now blocker-resolver.service blocker-guard.service
+sudo rm -f /run/blocker-adulte/uninstall-in-progress
 ```
 
-À partir d'ici, plus aucune réparation automatique n'a lieu.
+### La procédure manuelle
 
-#### Étape 1 — désactiver les deux watchdogs, dans l'ordre
-
-`disable` avant `stop` : une unité désactivée est traitée comme un retrait
-volontaire même si le drapeau disparaissait. La **garde d'abord**, puisque c'est
-elle qui relance le résolveur.
+Le script n'est pas indispensable. La commande suivante affiche la suite exacte
+de commandes qui fait la même chose, sans jamais passer par lui :
 
 ```bash
-sudo systemctl disable blocker-guard.service
-sudo systemctl stop    blocker-guard.service
-sudo systemctl disable blocker-resolver.service
-sudo systemctl stop    blocker-resolver.service
+sudo blocker-uninstall --manuel
 ```
 
-#### Étape 2 — arrêter les timers
+Elle couvre les quatre phases : `chattr -i` sur chaque fichier listé, `apt purge`
+ou la suppression manuelle, les policies navigateur, le retrait du hook
+initramfs suivi de `update-initramfs -u`, les cinq tables nftables à décharger,
+la ligne d'inclusion de `/etc/nftables.conf`, les règles auditd, les liens
+d'activation systemd et l'utilisateur système.
 
-```bash
-sudo systemctl disable --now blocker-selfheal.timer
-sudo systemctl disable --now blocker-list-update.timer
-sudo systemctl stop blocker-selfheal.service blocker-list-update.service
-```
+### Purge directe par apt
 
-#### Étape 3 — lever l'immuabilité (`chattr -i`)
-
-Sans cette étape, ni `apt` ni `rm` ne peuvent supprimer ces fichiers.
-
-```bash
-sudo chattr -i /etc/nftables/blocker-adulte.nft
-sudo chattr -i /etc/dnsmasq.d/blocker-adulte.conf
-sudo chattr -i /etc/systemd/resolved.conf.d/blocker-adulte.conf
-sudo chattr -i /etc/NetworkManager/dispatcher.d/90-blocker-adulte
-sudo chattr -i /etc/firefox/policies/policies.json
-sudo chattr -i /etc/opt/chrome/policies/managed/blocker-adulte.json
-sudo chattr -i /etc/chromium/policies/managed/blocker-adulte.json
-sudo chattr -i /etc/opt/chromium/policies/managed/blocker-adulte.json
-sudo chattr -i /etc/brave/policies/managed/blocker-adulte.json
-```
-
-(Les fichiers absents renvoient une erreur sans conséquence.)
-
-#### Étape 4 — retirer le paquet
-
-Installation par `.deb` :
-
-```bash
-sudo apt purge blocker-adulte
-```
-
-Installation par `install.sh` :
-
-```bash
-sudo rm -rf /usr/lib/blocker-adulte /usr/share/blocker-adulte /usr/share/doc/blocker-adulte
-sudo rm -rf /var/lib/blocker-adulte /etc/blocker-adulte
-sudo rm -f /lib/systemd/system/blocker-{resolver,guard,selfheal,list-update}.{service,timer}
-sudo rm -f /etc/dnsmasq.d/blocker-adulte.conf /etc/nftables/blocker-adulte.nft
-sudo rm -f /etc/systemd/resolved.conf.d/blocker-adulte.conf
-sudo rm -f /etc/NetworkManager/dispatcher.d/90-blocker-adulte
-sudo rm -f /usr/sbin/blocker-uninstall
-```
-
-Dans les deux cas, balayer les liens d'activation systemd. Si une unité a
-disparu avant que `systemctl disable` n'ait pu s'exécuter, le lien reste
-pendant et systemd affiche une unité `not-found` — le « service fantôme » que
-cette procédure doit précisément éviter :
-
-```bash
-sudo rm -f /etc/systemd/system/*.target.wants/blocker-*
-```
-
-#### Étape 5 — supprimer les quatre fichiers de policies
-
-`apt purge` ne les retire pas tous : `/etc/firefox/policies` et
-`/etc/chromium/policies` appartiennent aux paquets des navigateurs.
-
-```bash
-sudo rm -f /etc/firefox/policies/policies.json
-sudo rm -f /etc/opt/chrome/policies/managed/blocker-adulte.json
-sudo rm -f /etc/chromium/policies/managed/blocker-adulte.json
-sudo rm -f /etc/opt/chromium/policies/managed/blocker-adulte.json
-sudo rm -f /etc/brave/policies/managed/blocker-adulte.json
-```
-
-#### Étape 6 — retirer le hook initramfs et regénérer l'image
-
-Sans `update-initramfs -u`, les règles de base continueraient d'être chargées à
-chaque démarrage, alors même que plus rien d'autre n'existe.
-
-```bash
-sudo rm -f /etc/initramfs-tools/hooks/blocker-adulte
-sudo rm -f /etc/initramfs-tools/scripts/init-bottom/blocker-adulte
-sudo update-initramfs -u
-```
-
-#### Étape 7 — nftables, resolved, auditd
-
-```bash
-# Ligne d'inclusion ajoutée à un fichier qui ne nous appartient pas
-sudo cp -a /etc/nftables.conf /etc/nftables.conf.avant-blocker-adulte
-sudo sed -i '/blocker-adulte/d' /etc/nftables.conf
-
-# Les règles sont un état du noyau : supprimer les fichiers ne les décharge pas.
-# Sans cette étape, le DNS resterait redirigé vers un résolveur qui n'existe plus.
-sudo nft delete table ip   blocker_adulte_nat
-sudo nft delete table ip6  blocker_adulte_nat
-sudo nft delete table inet blocker_adulte
-sudo nft delete table ip   blocker_adulte_base_nat
-sudo nft delete table inet blocker_adulte_base
-
-sudo rm -f /etc/audit/rules.d/blocker-adulte.rules
-sudo augenrules --load
-
-sudo systemctl daemon-reload
-sudo systemctl restart systemd-resolved
-```
-
-#### Étape 8 — utilisateur système et triggers dpkg
-
-Les triggers dpkg disparaissent avec le paquet (étape 4) ; il ne reste que
-l'utilisateur système et le drapeau.
-
-```bash
-sudo deluser --system blocker-adulte
-sudo rm -rf /run/blocker-adulte
-```
-
-L'étape 7 a laissé volontairement une sauvegarde de votre `/etc/nftables.conf`.
-Une fois le fichier courant vérifié :
-
-```bash
-sudo rm /etc/nftables.conf.avant-blocker-adulte
-```
-
-Si des triggers subsistent après une purge interrompue :
-
-```bash
-grep blocker-adulte /var/lib/dpkg/triggers/File   # doit être vide
-sudo dpkg --configure -a                          # rejoue les triggers en attente
-```
+`sudo apt purge blocker-adulte` sans passer par `blocker-uninstall` reste
+possible et **ne casse pas la machine** : le `prerm` pose le drapeau de retrait,
+arrête les watchdogs dans le bon ordre et lève l'immuabilité ; le `postrm`
+décharge les tables nftables et régénère l'initramfs. Il restera à retirer à la
+main les policies navigateur, qu'`apt` ne possède pas.
 
 ### Vérifier que le système est propre
 
 ```bash
+sudo blocker-uninstall --etat                            # doit tout cocher
 sudo find / -xdev -name '*blocker-adulte*' 2>/dev/null   # rien
-systemctl list-units --all 'blocker-*'                    # rien
-sudo nft list ruleset | grep blocker                      # rien
-dpkg -l | grep blocker                                    # rien
-resolvectl status                                         # DNS d'origine revenu
+systemctl list-units --all 'blocker-*'                   # rien
+sudo nft list ruleset | grep blocker                     # rien
+dpkg -l | grep blocker                                   # rien
+resolvectl status                                        # DNS d'origine revenu
 ```
 
----
+Un fichier est laissé volontairement : `/etc/nftables.conf.avant-blocker-adulte`,
+la sauvegarde faite avant de retirer la ligne d'inclusion. À supprimer une fois
+le fichier courant vérifié.
 
 ## Vérifier que tout fonctionne
 
@@ -575,6 +574,8 @@ sudo tests/run_all.sh --tout   # y compris l'arrêt réel des services
 | `test_browser_reinstall.sh` | n°2 — la policy revient après une réinstallation de navigateur |
 | `test_recovery_mode_hook.sh` | n°3 — l'image initramfs contient bien règles, binaire et modules |
 | `test_no_hidden_files.sh` | n°4 et n°6 — manifeste complet, rien de caché |
+| `test_safesearch.sh` | SafeSearch effectif **et** Gmail/Drive/Agenda non cassés |
+| `test_uninstall_phases.sh` | Retrait pénible (pas de raccourci, jeton non rejouable) **et** sans piège |
 
 Codes de sortie : `0` conforme, `1` échec, `77` test ignoré (prérequis absent).
 
@@ -582,6 +583,10 @@ Les tests savent où ils tournent. Sans systemd en PID 1 (conteneur, chroot,
 image en construction), `test_watchdog_cross_restart.sh` s'ignore proprement et
 les contrôles de service se rabattent sur le processus, au lieu d'échouer à
 tort.
+
+`make check` complète la suite par une analyse statique : `bash -n` / `sh -n` sur
+les 22 scripts, `shellcheck -x` en niveau *warning*, et validation JSON des quatre
+fichiers de policies. Un avertissement shellcheck fait échouer la cible.
 
 `test_watchdog_cross_restart.sh` arrête réellement des services : le DNS est
 interrompu quelques secondes.

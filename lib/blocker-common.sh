@@ -28,6 +28,7 @@ BLOCKER_LISTEN_ADDR="127.0.0.1"
 BLOCKER_LISTEN_PORT="53"
 BLOCKER_GUARD_INTERVAL="15"           # secondes entre deux passes de watchdog
 BLOCKER_LOCK_HOSTS="auto"             # rendre /etc/hosts immuable : oui/non/auto
+BLOCKER_SAFESEARCH="oui"              # forcer le SafeSearch des moteurs : oui/non
 BLOCKER_LIST_URLS="https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
 https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/doh-vpn-proxy-bypass.txt"
 

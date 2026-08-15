@@ -125,6 +125,22 @@ done
 
 blocker_info "listes de blocage mises a jour : ${total} domaines au total dans ${DEST}"
 
+# --- SafeSearch force -------------------------------------------------------
+# Les adresses des hotes « stricts » des moteurs changent : on les rafraichit en
+# meme temps que les listes, dans la meme fenetre reseau.
+if [ -x /usr/lib/blocker-adulte/blocker-safesearch ]; then
+    /usr/lib/blocker-adulte/blocker-safesearch || \
+        blocker_warn "rafraichissement SafeSearch en echec, les valeurs en place restent actives"
+fi
+
+# --- Adresses des resolveurs DoH -------------------------------------------
+# Les adresses ecrites en dur dans le jeu de regles vieillissent ; on les
+# complete avec ce que les noms resolvent aujourd'hui.
+if [ -x /usr/lib/blocker-adulte/blocker-doh-refresh ]; then
+    /usr/lib/blocker-adulte/blocker-doh-refresh || \
+        blocker_warn "rafraichissement des adresses DoH en echec, la liste ecrite en dur reste active"
+fi
+
 # --- Rechargement du resolveur ---------------------------------------------
 if blocker_unit_active blocker-resolver.service; then
     if systemctl reload-or-restart blocker-resolver.service; then

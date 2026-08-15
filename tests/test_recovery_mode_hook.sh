@@ -56,7 +56,8 @@ EXTRAIT=""
 # remplacerait celui-ci et laisserait le premier repertoire derriere lui.
 trap 'rm -rf "${BAC}" "${EXTRAIT}"' EXIT
 
-if ( export DESTDIR="${BAC}" verbose=n version="$(uname -r)"; \
+noyau="$(uname -r)"
+if ( export DESTDIR="${BAC}" verbose=n version="${noyau}"; \
      "${HOOK}" >/dev/null 2>&1 ); then
     ok "le hook s'execute sans erreur"
 else

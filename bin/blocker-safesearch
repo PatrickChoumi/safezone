@@ -1,0 +1,190 @@
+#!/bin/bash
+# blocker-adulte — SafeSearch force (composant 1)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-safesearch
+# Lance par     : blocker-list-update (quotidien) et blocker-selfheal si le
+#                 fichier genere a disparu.
+#
+# POURQUOI CE COMPOSANT EST LE PLUS IMPORTANT DU LOT
+#
+# Une liste de blocage ne peut rien contre Google Images, YouTube ou Bing : ce
+# sont des domaines qu'on ne peut pas bloquer sans rendre la machine
+# inutilisable, et ils servent pourtant du contenu adulte a la demande.
+#
+# Les moteurs proposent tous un nom d'hote « verrouille en mode strict ».
+# Resoudre www.google.com vers l'adresse de forcesafesearch.google.com force
+# donc le SafeSearch au niveau du reseau : impossible a desactiver depuis les
+# preferences du navigateur ou du compte, et valable pour tous les navigateurs
+# et toutes les applications de la machine d'un seul coup.
+#
+# Les adresses de ces hotes changent : elles sont resolues a chaque passage
+# plutot que codees en dur. En cas d'echec reseau, le fichier deja en place est
+# conserve — jamais de regression silencieuse vers « pas de SafeSearch ».
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+
+DEST="${BLOCKER_STATEDIR}/blocklists"
+SORTIE="${DEST}/05-safesearch.conf"
+
+# Desactivation explicite : on retire le fichier genere plutot que de le laisser
+# trainer, sinon le resolveur continuerait a l'appliquer.
+case "${BLOCKER_SAFESEARCH:-oui}" in
+    non|no|0)
+        if [ -e "${SORTIE}" ]; then
+            rm -f "${SORTIE}"
+            blocker_notice "SafeSearch desactive par configuration, ${SORTIE} retire"
+            systemctl reload-or-restart blocker-resolver.service 2>/dev/null || true
+        fi
+        exit 0
+        ;;
+esac
+
+if ! command -v dig >/dev/null 2>&1; then
+    blocker_err "SafeSearch : la commande dig est requise (paquet dnsutils)"
+    exit 1
+fi
+WORK="$(mktemp -d)"
+trap 'rm -rf "${WORK}"' EXIT
+
+install -d -m 0755 "${DEST}"
+
+# ---------------------------------------------------------------------------
+# Table des correspondances
+# ---------------------------------------------------------------------------
+# Format : <hote strict>|<domaine a rediriger> [<domaine> ...]
+#
+# On ne redirige JAMAIS un domaine nu comme « google.com » : « address= »
+# s'applique aussi a tous ses sous-domaines, ce qui casserait Gmail, Drive,
+# Agenda et l'authentification. Seuls les hotes de recherche sont vises.
+correspondances() {
+    cat <<'EOF'
+forcesafesearch.google.com|www.google.com www.google.fr www.google.be www.google.ch www.google.ca www.google.co.uk www.google.de www.google.es www.google.it www.google.nl www.google.pt www.google.pl www.google.com.br www.google.com.au www.google.co.in www.google.co.jp www.google.ru www.google.com.mx www.google.se www.google.dk www.google.no www.google.fi www.google.at www.google.ie www.google.gr www.google.cz www.google.ro www.google.hu www.google.com.tr www.google.co.za www.google.com.ar www.google.cl www.google.com.co www.google.dz www.google.co.ma www.google.tn www.google.sn www.google.ci
+restrict.youtube.com|www.youtube.com m.youtube.com youtube.com youtubei.googleapis.com youtube.googleapis.com www.youtube-nocookie.com
+strict.bing.com|www.bing.com bing.com cn.bing.com
+safe.duckduckgo.com|duckduckgo.com www.duckduckgo.com start.duckduckgo.com html.duckduckgo.com lite.duckduckgo.com
+familysearch.yandex.ru|yandex.com www.yandex.com yandex.ru www.yandex.ru
+safesearch.pixabay.com|pixabay.com www.pixabay.com
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Resolution
+# ---------------------------------------------------------------------------
+# Les regles nftables redirigent le port 53 vers le resolveur local, sauf pour
+# l'utilisateur blocker-adulte. On resout donc sous cette identite quand c'est
+# possible : la resolution aboutit alors meme si le resolveur local est arrete,
+# ce qui est precisement le cas ou l'on a besoin de reconstruire ses listes.
+resoudre() {
+    local nom="$1" type="$2" sortie=""
+
+    if command -v runuser >/dev/null 2>&1 && getent passwd "${BLOCKER_USER}" >/dev/null 2>&1; then
+        sortie="$(runuser -u "${BLOCKER_USER}" -- \
+            dig +short +time=4 +tries=2 "-t${type}" \
+            "@${BLOCKER_UPSTREAM_1}" "${nom}" 2>/dev/null)"
+    fi
+
+    # Repli : resolveur local, puis resolution systeme.
+    if [ -z "${sortie}" ]; then
+        sortie="$(dig +short +time=4 +tries=2 "-t${type}" \
+            "@${BLOCKER_LISTEN_ADDR}" "${nom}" 2>/dev/null)"
+    fi
+    if [ -z "${sortie}" ]; then
+        sortie="$(dig +short +time=4 +tries=2 "-t${type}" "${nom}" 2>/dev/null)"
+    fi
+
+    # On ne garde que les adresses, en ecartant les CNAME intermediaires et
+    # les adresses nulles qui signaleraient un domaine bloque par erreur.
+    case "${type}" in
+        A)    printf '%s\n' "${sortie}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+                  | grep -vE '^(0\.0\.0\.0|127\.)' ;;
+        AAAA) printf '%s\n' "${sortie}" | grep -E '^[0-9a-fA-F:]+$' \
+                  | grep -vE '^(::|::1)$' ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Construction
+# ---------------------------------------------------------------------------
+CANDIDAT="${WORK}/05-safesearch.conf"
+
+{
+    printf '# blocker-adulte — SafeSearch force (genere automatiquement)\n'
+    printf '# Genere le %s par /usr/lib/blocker-adulte/blocker-safesearch\n' "$(date -Is)"
+    printf '#\n'
+    printf '# NE PAS MODIFIER A LA MAIN : ce fichier est reecrit a chaque mise a jour\n'
+    printf '# des listes. Pour desactiver le SafeSearch force, mettre\n'
+    printf '# BLOCKER_SAFESEARCH="non" dans /etc/blocker-adulte/blocker.conf.\n'
+    printf '#\n'
+    printf '# Chaque ligne fait resoudre un moteur de recherche vers sa variante\n'
+    printf '# verrouillee en mode strict. Le reglage devient impossible a changer\n'
+    printf '# depuis le navigateur ou le compte utilisateur.\n\n'
+} > "${CANDIDAT}"
+
+moteurs_ok=0
+moteurs_echec=0
+domaines_total=0
+
+while IFS='|' read -r hote domaines; do
+    [ -n "${hote}" ] || continue
+
+    mapfile -t v4 < <(resoudre "${hote}" A)
+    mapfile -t v6 < <(resoudre "${hote}" AAAA)
+
+    if [ "${#v4[@]}" -eq 0 ] && [ "${#v6[@]}" -eq 0 ]; then
+        blocker_warn "SafeSearch : ${hote} non resolu, moteur ignore cette fois"
+        moteurs_echec=$((moteurs_echec + 1))
+        continue
+    fi
+
+    {
+        printf '# --- %s ---\n' "${hote}"
+        for d in ${domaines}; do
+            for ip in "${v4[@]}"; do
+                [ -n "${ip}" ] && printf 'address=/%s/%s\n' "${d}" "${ip}"
+            done
+            for ip in "${v6[@]}"; do
+                [ -n "${ip}" ] && printf 'address=/%s/%s\n' "${d}" "${ip}"
+            done
+            domaines_total=$((domaines_total + 1))
+        done
+        printf '\n'
+    } >> "${CANDIDAT}"
+
+    blocker_info "SafeSearch : ${hote} -> ${v4[*]:-aucune IPv4} ${v6[*]:-}"
+    moteurs_ok=$((moteurs_ok + 1))
+done < <(correspondances)
+
+# ---------------------------------------------------------------------------
+# Validation avant mise en place
+# ---------------------------------------------------------------------------
+if [ "${moteurs_ok}" -eq 0 ]; then
+    blocker_warn "SafeSearch : aucun moteur resolu (machine hors ligne ?)"
+    if [ -s "${SORTIE}" ]; then
+        blocker_info "SafeSearch : le fichier en place est conserve"
+        exit 0
+    fi
+    blocker_err "SafeSearch : aucun fichier en place et aucune resolution possible"
+    exit 1
+fi
+
+# Une configuration invalide empecherait le resolveur de demarrer : on la fait
+# valider par dnsmasq lui-meme avant de la mettre en place.
+if command -v dnsmasq >/dev/null 2>&1; then
+    if ! dnsmasq --test --conf-file="${CANDIDAT}" >/dev/null 2>&1; then
+        blocker_err "SafeSearch : le fichier genere est invalide, mise en place abandonnee"
+        dnsmasq --test --conf-file="${CANDIDAT}" >&2 || true
+        exit 1
+    fi
+fi
+
+install -m 0644 "${CANDIDAT}" "${SORTIE}"
+
+blocker_info "SafeSearch actif : ${moteurs_ok} moteur(s), ${domaines_total} domaine(s) rediriges vers leur variante stricte"
+[ "${moteurs_echec}" -gt 0 ] && \
+    blocker_warn "SafeSearch : ${moteurs_echec} moteur(s) non resolu(s) cette fois, nouvelle tentative a la prochaine mise a jour"
+
+exit 0

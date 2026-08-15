@@ -30,6 +30,8 @@ fi
 TESTS="test_no_hidden_files.sh
 test_dns_leak.sh
 test_doh_blocked.sh
+test_safesearch.sh
+test_uninstall_phases.sh
 test_browser_reinstall.sh
 test_recovery_mode_hook.sh"
 

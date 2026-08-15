@@ -39,12 +39,15 @@ install:
 	$(INSTALL_PROG) bin/blocker-resolver-run     $(DESTDIR)$(libdir)/blocker-resolver-run
 	$(INSTALL_PROG) bin/blocker-selfheal         $(DESTDIR)$(libdir)/blocker-selfheal
 	$(INSTALL_PROG) bin/blocker-list-update      $(DESTDIR)$(libdir)/blocker-list-update
+	$(INSTALL_PROG) bin/blocker-safesearch       $(DESTDIR)$(libdir)/blocker-safesearch
+	$(INSTALL_PROG) bin/blocker-doh-refresh     $(DESTDIR)$(libdir)/blocker-doh-refresh
 	$(INSTALL_PROG) bin/blocker-apply-policies   $(DESTDIR)$(libdir)/blocker-apply-policies
 	$(INSTALL_PROG) bin/blocker-apply-nftables   $(DESTDIR)$(libdir)/blocker-apply-nftables
 
 	# --- Script de desinstallation, dans le PATH de root ------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sbindir)
 	$(INSTALL_PROG) blocker-uninstall.sh         $(DESTDIR)$(sbindir)/blocker-uninstall
+	$(INSTALL_PROG) bin/blocker-status           $(DESTDIR)$(sbindir)/blocker-status
 
 	# --- Unites systemd ----------------------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(unitdir)
@@ -104,6 +107,8 @@ install:
 	$(INSTALL_PROG) tests/test_browser_reinstall.sh     $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/test_recovery_mode_hook.sh    $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/test_no_hidden_files.sh       $(DESTDIR)$(sharedir)/tests/
+	$(INSTALL_PROG) tests/test_safesearch.sh           $(DESTDIR)$(sharedir)/tests/
+	$(INSTALL_PROG) tests/test_uninstall_phases.sh     $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/run_all.sh                    $(DESTDIR)$(sharedir)/tests/
 
 	# --- Documentation ------------------------------------------------------
@@ -128,6 +133,17 @@ check:
 		if head -1 "$$f" | grep -q 'bin/sh'; then sh -n "$$f" || erreurs=1; \
 		else bash -n "$$f" || erreurs=1; fi; \
 	done; \
+	if command -v shellcheck >/dev/null 2>&1; then \
+		shellcheck -x -S warning -e SC2034 \
+			install.sh blocker-uninstall.sh bin/* lib/*.sh tests/*.sh \
+			etc/NetworkManager/dispatcher.d/90-blocker-adulte \
+			|| erreurs=1; \
+		shellcheck -S warning -e SC2034 -s sh \
+			initramfs-hook/* debian/postinst debian/prerm debian/postrm \
+			|| erreurs=1; \
+	else \
+		echo "shellcheck absent : analyse statique ignoree (apt install shellcheck)."; \
+	fi; \
 	if command -v python3 >/dev/null 2>&1; then \
 		for f in etc/*-policies/*.json; do \
 			python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$$f" || erreurs=1; \

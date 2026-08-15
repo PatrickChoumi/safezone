@@ -1,0 +1,131 @@
+#!/bin/bash
+# blocker-adulte — rafraichissement des adresses DoH (composant 2)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-doh-refresh
+# Lance par     : blocker-list-update (quotidien)
+#
+# Le fichier /etc/nftables/blocker-adulte.nft contient une liste d'adresses
+# d'amorcage DoH ecrites en dur. Elle rend service immediatement apres
+# l'installation, mais elle vieillit : les fournisseurs changent d'adresses et
+# en ajoutent.
+#
+# Ce script resout les noms des resolveurs DoH connus et AJOUTE les adresses
+# obtenues aux jeux nftables deja charges, sans toucher au fichier. Les ajouts
+# vivent donc en memoire du noyau et sont refaits a chaque mise a jour : aucune
+# derive silencieuse entre ce que dit le fichier et ce qui est applique.
+#
+# La resolution se fait sous l'identite blocker-adulte, seule exemptee de la
+# redirection DNS — sans quoi on interrogerait notre propre resolveur, qui
+# bloque justement ces noms et ne renverrait que des 0.0.0.0.
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+
+if ! command -v nft >/dev/null 2>&1 || ! command -v dig >/dev/null 2>&1; then
+    blocker_err "nft et dig sont requis (paquets nftables et dnsutils)"
+    exit 1
+fi
+
+if ! nft list table inet blocker_adulte >/dev/null 2>&1; then
+    blocker_warn "table inet blocker_adulte absente, rien a rafraichir"
+    exit 0
+fi
+
+# Noms d'hote des principaux resolveurs DoH publics. Ce sont des NOMS, pas des
+# adresses : c'est tout l'interet, ils restent valables quand les adresses
+# derriere changent.
+hotes_doh() {
+    cat <<'EOF'
+dns.google
+dns64.dns.google
+cloudflare-dns.com
+one.one.one.one
+security.cloudflare-dns.com
+family.cloudflare-dns.com
+mozilla.cloudflare-dns.com
+dns.quad9.net
+dns10.quad9.net
+dns11.quad9.net
+dns.adguard-dns.com
+family.adguard-dns.com
+unfiltered.adguard-dns.com
+doh.opendns.com
+familyshield.opendns.com
+doh.cleanbrowsing.org
+dns.nextdns.io
+freedns.controld.com
+dns.controld.com
+doh.mullvad.net
+dns.sb
+doh.dns.sb
+dns.digitale-gesellschaft.ch
+dnsforge.de
+doh.ffmuc.net
+odoh.cloudflare-dns.com
+EOF
+}
+
+resoudre_hors_filtre() {
+    local nom="$1" type="$2" sortie=""
+
+    if command -v runuser >/dev/null 2>&1 && getent passwd "${BLOCKER_USER}" >/dev/null 2>&1; then
+        sortie="$(runuser -u "${BLOCKER_USER}" -- \
+            dig +short +time=3 +tries=1 "-t${type}" \
+            "@${BLOCKER_UPSTREAM_1}" "${nom}" 2>/dev/null)"
+    fi
+    [ -n "${sortie}" ] || return 0
+
+    case "${type}" in
+        A)    printf '%s\n' "${sortie}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+                  | grep -vE '^(0\.0\.0\.0|127\.|10\.|192\.168\.|169\.254\.)' ;;
+        AAAA) printf '%s\n' "${sortie}" | grep -E '^[0-9a-fA-F:]+$' \
+                  | grep -vE '^(::|::1|fe80)' ;;
+    esac
+}
+
+ajoutes_v4=0
+ajoutes_v6=0
+hotes_resolus=0
+
+while IFS= read -r hote; do
+    [ -n "${hote}" ] || continue
+    trouve=0
+
+    while IFS= read -r ip; do
+        [ -n "${ip}" ] || continue
+        # « add element » est idempotent : une adresse deja presente n'est pas
+        # dupliquee et ne provoque pas d'erreur.
+        if nft add element inet blocker_adulte doh_ipv4 "{ ${ip} }" 2>/dev/null; then
+            ajoutes_v4=$((ajoutes_v4 + 1)); trouve=1
+        fi
+    done < <(resoudre_hors_filtre "${hote}" A)
+
+    while IFS= read -r ip; do
+        [ -n "${ip}" ] || continue
+        if nft add element inet blocker_adulte doh_ipv6 "{ ${ip} }" 2>/dev/null; then
+            ajoutes_v6=$((ajoutes_v6 + 1)); trouve=1
+        fi
+    done < <(resoudre_hors_filtre "${hote}" AAAA)
+
+    [ "${trouve}" -eq 1 ] && hotes_resolus=$((hotes_resolus + 1))
+done < <(hotes_doh)
+
+if [ "${hotes_resolus}" -eq 0 ]; then
+    blocker_warn "rafraichissement DoH : aucun hote resolu (machine hors ligne ?)"
+    blocker_info "les adresses ecrites en dur dans le jeu de regles restent actives"
+    exit 0
+fi
+
+total_v4="$(nft list set inet blocker_adulte doh_ipv4 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u | wc -l)"
+total_v6="$(nft list set inet blocker_adulte doh_ipv6 2>/dev/null | grep -cE '[0-9a-fA-F]{1,4}:')"
+
+blocker_info "rafraichissement DoH : ${hotes_resolus} hotes resolus, jeux portes a ${total_v4} adresses IPv4 et ~${total_v6} lignes IPv6"
+
+# Note volontaire : les ajouts vivent dans le noyau, pas dans le fichier. Un
+# rechargement complet (« nft -f ») repart de la liste ecrite en dur, et ce
+# script est rejoue a la mise a jour suivante. C'est ce qui evite qu'un fichier
+# edite a la main et le noyau divergent sans que personne ne s'en apercoive.
+exit 0
