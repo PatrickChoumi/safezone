@@ -106,7 +106,69 @@ for d in mail.google.com drive.google.com accounts.google.com calendar.google.co
     esac
 done
 
-titre "5. Le fichier se regenere apres suppression"
+titre "5. Chaque entree est structurellement capable de forcer quelque chose"
+
+# Une entree dont l'hote « strict » resout vers la MEME adresse que le domaine
+# normal ne force rien du tout : le serveur ne peut pas distinguer les deux
+# requetes autrement que par l'en-tete Host, que le DNS ne touche pas. Une telle
+# entree donne une fausse assurance et peut casser le site vise.
+#
+# On interroge l'amont directement, sous l'identite blocker-adulte : passer par
+# notre propre resolveur renverrait l'adresse deja reecrite et le controle
+# n'aurait aucun sens.
+SRC=/usr/lib/blocker-adulte/blocker-safesearch
+
+resoudre_amont() {
+    local nom="$1" sortie=""
+    if command -v runuser >/dev/null 2>&1 && getent passwd blocker-adulte >/dev/null 2>&1; then
+        sortie="$(runuser -u blocker-adulte -- dig +short +time=4 +tries=2 -tA \
+                  "@${BLOCKER_UPSTREAM_1}" "${nom}" 2>/dev/null)"
+    fi
+    printf '%s\n' "${sortie}" | grep -E '^[0-9.]+$' | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+if [ ! -r "${SRC}" ]; then
+    warn "${SRC} illisible, controle ignore"
+else
+    # On rejoue la table de correspondances du script lui-meme plutot que d'en
+    # tenir une copie ici, qui divergerait a la premiere modification.
+    entrees="$(sed -n '/^correspondances() {/,/^}/p' "${SRC}" | grep -E '^[a-z0-9.-]+\|')"
+
+    if [ -z "${entrees}" ]; then
+        ko "aucune entree extraite de correspondances() — le format a-t-il change ?"
+    else
+        nb_entrees=$(printf '%s\n' "${entrees}" | wc -l)
+        ok "${nb_entrees} entrees extraites de correspondances()"
+
+        while IFS='|' read -r hote domaines; do
+            [ -n "${hote}" ] || continue
+            premier="$(printf '%s' "${domaines}" | awk '{print $1}')"
+
+            ip_stricte="$(resoudre_amont "${hote}")"
+            ip_normale="$(resoudre_amont "${premier}")"
+
+            if [ -z "${ip_stricte}" ]; then
+                ko "${hote} ne resout pas — entree inutilisable"
+                continue
+            fi
+            if [ -z "${ip_normale}" ]; then
+                warn "${premier} ne resout pas depuis cette machine, comparaison ignoree"
+                continue
+            fi
+
+            if [ "${ip_stricte}" = "${ip_normale}" ]; then
+                ko "${hote} : adresse IDENTIQUE a celle de ${premier} (${ip_stricte})"
+                info "cette entree ne peut rien forcer : le serveur ne distingue les"
+                info "deux requetes que par l'en-tete Host, hors de portee du DNS."
+                info "Mecanisme probablement par cookie ou parametre d'URL : a retirer."
+            else
+                ok "${hote} : adresse dediee (${ip_stricte}) distincte de ${premier}"
+            fi
+        done <<< "${entrees}"
+    fi
+fi
+
+titre "6. Le fichier se regenere apres suppression"
 
 sauvegarde="$(mktemp)"
 cp "${FS}" "${sauvegarde}"
@@ -126,7 +188,7 @@ else
 fi
 rm -f "${sauvegarde}"
 
-titre "6. Le fichier genere est une configuration dnsmasq valide"
+titre "7. Le fichier genere est une configuration dnsmasq valide"
 
 if command -v dnsmasq >/dev/null 2>&1; then
     if dnsmasq --test --conf-file="${FS}" >/dev/null 2>&1; then

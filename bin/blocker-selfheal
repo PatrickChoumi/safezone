@@ -108,6 +108,60 @@ if [ "${policies_apres}" -gt "${policies_avant}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 3 bis. Derive des adresses SafeSearch
+# ---------------------------------------------------------------------------
+# Ce controle protege contre une panne, pas contre un contournement.
+#
+# Les adresses des hotes « stricts » appartiennent aux moteurs et peuvent
+# changer sans preavis. Si l'adresse de forcesafesearch.google.com change, notre
+# fichier continue de faire pointer www.google.com vers l'ancienne : Google
+# devient injoignable pour toute la machine, jusqu'a la mise a jour quotidienne.
+#
+# Une panne de Google Search est exactement le genre d'incident qui fait tout
+# desinstaller. On verifie donc la derive plus souvent que la mise a jour des
+# listes — mais pas a chaque passe : une requete DNS toutes les 5 minutes pour
+# rien serait du gaspillage. On ne sonde que si le fichier a plus de 6 heures.
+SS="${BLOCKER_STATEDIR}/blocklists/05-safesearch.conf"
+
+safesearch_actif() {
+    case "${BLOCKER_SAFESEARCH:-oui}" in
+        non|no|0) return 1 ;;
+    esac
+    return 0
+}
+
+if safesearch_actif; then
+    if [ ! -s "${SS}" ]; then
+        note "SafeSearch absent, regeneration"
+        /usr/lib/blocker-adulte/blocker-safesearch >/dev/null 2>&1 && \
+            systemctl restart blocker-resolver.service 2>/dev/null || true
+    else
+        age_h=$(( ( $(date +%s) - $(stat -c %Y "${SS}" 2>/dev/null || date +%s) ) / 3600 ))
+        if [ "${age_h}" -ge 6 ] && command -v dig >/dev/null 2>&1; then
+            # Sonde temoin : un seul hote suffit a detecter une derive, et
+            # Google est celui dont une panne se verrait le plus.
+            temoin="forcesafesearch.google.com"
+            reel="$(runuser -u "${BLOCKER_USER}" -- \
+                    dig +short +time=4 +tries=1 -tA "@${BLOCKER_UPSTREAM_1}" "${temoin}" \
+                    2>/dev/null | grep -E '^[0-9.]+$' | sort -u | head -1)"
+            enregistre="$(grep '^address=/www\.google\.com/' "${SS}" 2>/dev/null \
+                          | sed 's|.*/||' | grep -E '^[0-9.]+$' | sort -u | head -1)"
+
+            if [ -n "${reel}" ] && [ -n "${enregistre}" ] && [ "${reel}" != "${enregistre}" ]; then
+                note "adresse SafeSearch perimee (${enregistre} -> ${reel}), regeneration immediate"
+                note "sans cette correction, www.google.com pointerait vers une adresse morte"
+                if /usr/lib/blocker-adulte/blocker-safesearch >/dev/null 2>&1; then
+                    systemctl restart blocker-resolver.service 2>/dev/null || true
+                    blocker_info "SafeSearch regenere et resolveur redemarre"
+                else
+                    blocker_err "regeneration du SafeSearch en echec"
+                fi
+            fi
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Regles nftables actives vs attendues
 # ---------------------------------------------------------------------------
 if ! /usr/lib/blocker-adulte/blocker-apply-nftables --check >/dev/null 2>&1; then

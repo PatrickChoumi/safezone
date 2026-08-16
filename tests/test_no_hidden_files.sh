@@ -301,15 +301,58 @@ fi
 titre "7. Aucune copie hors des emplacements documentes"
 # ---------------------------------------------------------------------------
 
+# La liste des executables a chercher est DERIVEE, jamais recopiee ici.
+#
+# Elle etait auparavant ecrite en dur, et n'a pas suivi l'ajout de
+# blocker-safesearch, blocker-doh-refresh et blocker-status : ces trois scripts
+# ont cesse d'etre verifies sans que rien ne le signale. Une liste dupliquee
+# derive toujours ; on repart donc des sources de verite.
+#
+# Deux sources, reunies :
+#   - le Makefile, qui decide seul de ce qui s'installe et ou. C'est la source
+#     de reference, disponible quand le test tourne depuis le depot.
+#   - les executables reellement poses dans /usr/lib/blocker-adulte, qui prend
+#     le relais quand le test tourne depuis /usr/share/blocker-adulte/tests,
+#     ou aucun Makefile n'accompagne l'installation.
+scripts_a_chercher() {
+    local makefile
+    for makefile in "$(dirname "$0")/../Makefile" \
+                    "$(dirname "$0")/../../Makefile" \
+                    /usr/share/blocker-adulte/Makefile; do
+        [ -r "${makefile}" ] || continue
+        grep -oE 'bin/blocker-[a-z0-9-]+' "${makefile}" | sed 's#^bin/##'
+    done
+    [ -d /usr/lib/blocker-adulte ] && \
+        find /usr/lib/blocker-adulte -maxdepth 1 -type f -name 'blocker-*' \
+             -not -name '*.sh' -printf '%f\n' 2>/dev/null
+}
+
+mapfile -t SCRIPTS < <(scripts_a_chercher | sort -u)
+
+# Une extraction vide signifie que le Makefile a change de forme ou que rien
+# n'est installe. Passer sous silence donnerait un test toujours vert qui ne
+# verifie plus rien : on echoue franchement.
+if [ "${#SCRIPTS[@]}" -eq 0 ]; then
+    ko "aucun executable a chercher n'a pu etre derive"
+    info "ni le Makefile ni /usr/lib/blocker-adulte n'ont fourni de liste."
+    info "Le controle anti-copie ne verifie donc RIEN : le corriger avant"
+    info "de se fier au resultat de ce test."
+else
+    ok "${#SCRIPTS[@]} executables a verifier, derives du Makefile et de l'installation"
+    info "$(printf '%s ' "${SCRIPTS[@]}")"
+fi
+
 # On cherche les executables du projet ailleurs que la ou ils doivent etre.
 copies=0
-for script in blocker-guard blocker-selfheal blocker-resolver-run \
-              blocker-apply-policies blocker-apply-nftables blocker-configure \
-              blocker-list-update; do
+for script in "${SCRIPTS[@]}"; do
     while IFS= read -r emplacement; do
         [ -n "${emplacement}" ] || continue
         case "${emplacement}" in
+            # Emplacements documentes au manifeste. /usr/sbin en fait partie :
+            # blocker-status et blocker-uninstall y sont poses volontairement,
+            # pour etre dans le PATH de root.
             /usr/lib/blocker-adulte/*|/usr/share/blocker-adulte/*) continue ;;
+            /usr/sbin/blocker-status|/usr/sbin/blocker-uninstall) continue ;;
         esac
         # Depot source ou arbre de construction : reconnu a la presence d'un
         # Makefile et d'un debian/control dans un repertoire ancetre.

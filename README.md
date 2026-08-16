@@ -132,11 +132,31 @@ donc le SafeSearch **au niveau du réseau** :
 | Bing | `strict.bing.com` | `www.bing.com`, `bing.com`, `cn.bing.com` |
 | DuckDuckGo | `safe.duckduckgo.com` | `duckduckgo.com` et ses sous-domaines de recherche |
 | Yandex | `familysearch.yandex.ru` | `yandex.com`, `yandex.ru` |
-| Pixabay | `safesearch.pixabay.com` | `pixabay.com` |
 
 **Les adresses ne sont jamais codées en dur** : `blocker-safesearch` les résout à
 chaque mise à jour quotidienne. Si la résolution échoue, le fichier en place est
 conservé — jamais de retour silencieux à « pas de SafeSearch ».
+
+**Protection contre la dérive.** Ces adresses appartiennent aux moteurs et
+peuvent changer sans préavis. Une adresse périmée ne dégraderait pas le
+filtrage : elle **casserait Google Search** pour toute la machine jusqu'à la
+mise à jour suivante — précisément le genre de panne qui fait tout désinstaller.
+Le self-heal sonde donc l'hôte témoin `forcesafesearch.google.com` dès que le
+fichier a plus de 6 heures, et régénère immédiatement en cas d'écart. La sonde
+n'a pas lieu à chaque passe : une requête DNS toutes les 5 minutes pour rien
+serait du gaspillage.
+
+**Critère d'admission d'une entrée.** Un moteur n'a sa place dans la table que
+s'il publie un hôte dédié appliquant le filtrage d'après l'**adresse** jointe,
+indépendamment de l'en-tête `Host`. Un mécanisme par cookie ou paramètre d'URL
+(`?safesearch=true`) est hors de portée du DNS : rediriger dans ce cas ne filtre
+rien **et risque de casser le site**. `tests/test_safesearch.sh` vérifie
+automatiquement, pour chaque entrée, que l'adresse stricte diffère de l'adresse
+normale du domaine ciblé — une entrée qui échoue fait échouer la suite.
+
+*Pixabay a été retiré pour cette raison* : son SafeSearch documenté passe par un
+cookie, et rien n'établit que `safesearch.pixabay.com` serve le site. Le détail
+du raisonnement est en commentaire dans `bin/blocker-safesearch`.
 
 **Ce qui n'est délibérément pas touché.** Seuls les hôtes de recherche sont
 redirigés, jamais un domaine nu. Rediriger `google.com` s'appliquerait à *tous*
