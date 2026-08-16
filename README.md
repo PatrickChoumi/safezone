@@ -365,6 +365,7 @@ existe sans être déclaré ici.
 /usr/lib/blocker-adulte/blocker-selfheal
 /usr/lib/blocker-adulte/blocker-list-update
 /usr/lib/blocker-adulte/blocker-safesearch
+/usr/lib/blocker-adulte/blocker-upstream
 /usr/lib/blocker-adulte/blocker-doh-refresh
 /usr/lib/blocker-adulte/blocker-apply-policies
 /usr/lib/blocker-adulte/blocker-apply-nftables
@@ -685,9 +686,40 @@ Les quatre dernières lignes sont les vraies portes de sortie. Elles demandent
 toutes de savoir précisément quoi faire — ce qui est exactement le niveau de
 friction visé : pénible et délibéré, pas impossible.
 
+### Ce qui reste ouvert, par ordre de facilité
+
+Classé par ce qu'il en coûte réellement de l'emprunter — c'est la seule façon
+honnête de présenter la chose.
+
+| Contournement | Difficulté | Traité ? |
+|---|---|---|
+| Extension VPN/proxy de navigateur | Aucune compétence, aucun droit root | **Fermé** : permission `proxy` refusée (Chrome/Chromium/Brave), installation d'extensions interdite (Firefox) |
+| VPN système (WireGuard, OpenVPN, client commercial) | Quelques minutes, root requis | **Ouvert** — voir ci-dessous |
+| Tor Browser (portable, sans installation) | Quelques minutes, aucun root | **Ouvert** — conçu pour être indétectable par ce type de filtrage |
+| Autre appareil (téléphone, partage 4G) | Immédiat | **Hors de portée** par nature |
+| Live USB / autre système | Quelques minutes | **Hors périmètre** assumé (bootloader jamais touché) |
+| Endpoint DoH privé sur IP inconnue | Compétence technique réelle | **Ouvert** |
+| Accès direct par adresse IP | Compétence technique réelle | **Ouvert** — limite de tout filtrage DNS |
+
+**Pourquoi le VPN système n'est pas traité comme le DoH.** Les fournisseurs DoH
+publient une poignée d'adresses d'amorçage stables : les énumérer marche. Un VPN
+sort en UDP ou TCP vers une adresse quelconque parmi des milliers, renouvelées
+en permanence. Bloquer « les VPN » demanderait soit une liste toujours en retard,
+soit une politique de refus par défaut sur tout le trafic sortant — ce qui rendrait
+la machine inutilisable. Les *noms* des principaux fournisseurs sont bloqués côté
+DNS (on ne peut pas télécharger le client facilement), mais un tunnel déjà
+configuré passe.
+
+**Le fond du problème.** Ce système filtre au niveau réseau et DNS *de cette
+machine*. Tout ce qui contourne ce niveau — chiffrement de bout en bout vers un
+tiers, autre appareil, autre système — lui échappe par construction. Aucune
+itération ne changera cela sans sortir du périmètre « un outil sur une seule
+machine ». C'est une friction contre l'impulsion, pas une barrière contre une
+décision délibérée de cinq minutes.
+
 ### Limites structurelles
 
-- **Un accès root suffit.** N'importe laquelle des huit étapes peut être faite à
+- **Un accès root suffit.** N'importe laquelle des quatre phases peut être faite à
   la main. C'est voulu — c'est même le critère n°5. La friction vient du nombre
   d'endroits à connaître, pas d'une impossibilité technique.
 - **auditd exige que l'audit soit actif au démarrage.** Sur certaines

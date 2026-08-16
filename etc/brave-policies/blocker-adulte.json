@@ -1,21 +1,16 @@
 {
   "_comment": "blocker-adulte - policy Brave (composant 3). Deployee dans /etc/brave/policies/managed/blocker-adulte.json. Reprend les policies Chromium et y ajoute les specificites Brave (Tor, VPN integre) qui contourneraient sinon entierement le resolveur local.",
-
   "DnsOverHttpsMode": "off",
   "DnsOverHttpsTemplates": "",
   "BuiltInDnsClientEnabled": false,
   "QuicAllowed": false,
-
   "IncognitoModeAvailability": 1,
-
   "SafeSitesFilterBehavior": 1,
   "ForceGoogleSafeSearch": true,
   "ForceYouTubeRestrict": 2,
-
   "ProxySettings": {
     "ProxyMode": "system"
   },
-
   "URLBlocklist": [
     "chrome://flags",
     "brave://flags",
@@ -24,13 +19,22 @@
     "chrome://net-export",
     "brave://net-export"
   ],
-
   "URLAllowlist": [],
-
   "TorDisabled": true,
   "BraveVPNDisabled": 1,
   "BraveRewardsDisabled": true,
   "BraveWalletDisabled": true,
-
-  "BackgroundModeEnabled": false
+  "BackgroundModeEnabled": false,
+  "ExtensionSettings": {
+    "*": {
+      "installation_mode": "allowed",
+      "blocked_permissions": [
+        "proxy",
+        "vpnProvider",
+        "socket"
+      ],
+      "blocked_install_message": "Les extensions de type VPN ou proxy sont bloquees par blocker-adulte : elles feraient sortir tout le trafic du navigateur hors du resolveur local. Voir la procedure de retrait dans /usr/share/doc/blocker-adulte/README.md"
+    }
+  },
+  "BlockExternalExtensions": true
 }

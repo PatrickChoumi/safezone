@@ -7,18 +7,14 @@
     "ce bloc _comment est donc sans effet fonctionnel.",
     "Retrait : voir README, etape 5 de la procedure de desinstallation."
   ],
-
   "policies": {
     "DNSOverHTTPS": {
       "Enabled": false,
       "Locked": true,
       "ExcludedDomains": []
     },
-
     "DisablePrivateBrowsing": true,
-
     "BlockAboutConfig": true,
-
     "Preferences": {
       "network.trr.mode": {
         "Value": 5,
@@ -33,14 +29,22 @@
         "Status": "locked"
       }
     },
-
     "Proxy": {
       "Mode": "system",
       "Locked": true
     },
-
     "UserMessaging": {
       "ExtensionRecommendations": false
+    },
+    "InstallAddonsPermission": {
+      "Allow": [],
+      "Default": false
+    },
+    "ExtensionSettings": {
+      "*": {
+        "installation_mode": "blocked",
+        "blocked_install_message": "L'installation d'extensions est bloquee par blocker-adulte : une extension VPN ou proxy contournerait entierement le resolveur local. Pour autoriser une extension precise, ajouter son identifiant a la liste Allow de /etc/firefox/policies/policies.json (root requis)."
+      }
     }
   }
 }

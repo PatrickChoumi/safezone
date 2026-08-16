@@ -90,7 +90,52 @@ else
     warn "dig absent, controle ignore"
 fi
 
-titre "5. Les enregistrements HTTPS/SVCB (type 65) sont filtres"
+titre "5. Extensions proxy de navigateur bloquees"
+
+# C'est le contournement le plus facile de tout le dispositif : installer une
+# extension VPN/proxy ne demande aucun droit root et fait sortir tout le trafic
+# du navigateur hors du resolveur local et de nftables.
+verifier_antiproxy() {
+    local fichier="$1" famille="$2"
+    [ -s "${fichier}" ] || return 0
+    case "${famille}" in
+        firefox)
+            # Firefox ne sait pas filtrer par permission : le seul levier fiable
+            # est d'interdire l'installation de nouvelles extensions.
+            if grep -q '"InstallAddonsPermission"' "${fichier}" && \
+               grep -A3 '"InstallAddonsPermission"' "${fichier}" | grep -q '"Default": *false'; then
+                ok "Firefox : installation de nouvelles extensions interdite"
+            else
+                ko "Firefox : une extension VPN/proxy reste installable (${fichier})"
+            fi
+            if grep -A4 '"Proxy"' "${fichier}" | grep -q '"Locked": *true'; then
+                ok "Firefox : parametres proxy verrouilles"
+            else
+                ko "Firefox : parametres proxy non verrouilles"
+            fi
+            ;;
+        *)
+            if grep -q '"blocked_permissions"' "${fichier}" && \
+               grep -A5 '"blocked_permissions"' "${fichier}" | grep -q '"proxy"'; then
+                ok "${famille} : permission « proxy » refusee aux extensions"
+            else
+                ko "${famille} : une extension proxy reste installable (${fichier})"
+            fi
+            if grep -q '"ProxyMode": *"system"' "${fichier}"; then
+                ok "${famille} : mode proxy impose par policy"
+            else
+                ko "${famille} : mode proxy non impose"
+            fi
+            ;;
+    esac
+}
+
+verifier_antiproxy /etc/firefox/policies/policies.json firefox
+verifier_antiproxy /etc/opt/chrome/policies/managed/blocker-adulte.json chrome
+verifier_antiproxy /etc/chromium/policies/managed/blocker-adulte.json chromium
+verifier_antiproxy /etc/brave/policies/managed/blocker-adulte.json brave
+
+titre "6. Les enregistrements HTTPS/SVCB (type 65) sont filtres"
 
 # Ces enregistrements annoncent aux navigateurs les endpoints DoH disponibles :
 # les laisser passer permettrait une bascule automatique vers DoH.
@@ -100,7 +145,7 @@ else
     ko "filter-rr=65 absent de /etc/dnsmasq.d/blocker-adulte.conf"
 fi
 
-titre "6. Policies navigateur : DoH desactive"
+titre "7. Policies navigateur : DoH desactive"
 
 trouve=0
 for f in /etc/firefox/policies/policies.json \

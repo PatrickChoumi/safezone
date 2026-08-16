@@ -1,29 +1,34 @@
 {
   "_comment": "blocker-adulte - policy Google Chrome (composant 3). Deployee dans /etc/opt/chrome/policies/managed/blocker-adulte.json. Chrome signalera cette cle comme 'policy inconnue' dans chrome://policy : c'est attendu, elle ne sert qu'a la documentation.",
-
   "DnsOverHttpsMode": "off",
   "DnsOverHttpsTemplates": "",
   "BuiltInDnsClientEnabled": false,
   "QuicAllowed": false,
-
   "IncognitoModeAvailability": 1,
-
   "SafeSitesFilterBehavior": 1,
   "ForceGoogleSafeSearch": true,
   "ForceYouTubeRestrict": 2,
-
   "ProxySettings": {
     "ProxyMode": "system"
   },
-
   "URLBlocklist": [
     "chrome://flags",
     "chrome://net-internals",
     "chrome://net-export"
   ],
-
   "URLAllowlist": [],
-
   "ChromeVariations": 1,
-  "BackgroundModeEnabled": false
+  "BackgroundModeEnabled": false,
+  "ExtensionSettings": {
+    "*": {
+      "installation_mode": "allowed",
+      "blocked_permissions": [
+        "proxy",
+        "vpnProvider",
+        "socket"
+      ],
+      "blocked_install_message": "Les extensions de type VPN ou proxy sont bloquees par blocker-adulte : elles feraient sortir tout le trafic du navigateur hors du resolveur local. Voir la procedure de retrait dans /usr/share/doc/blocker-adulte/README.md"
+    }
+  },
+  "BlockExternalExtensions": true
 }

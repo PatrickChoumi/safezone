@@ -15,8 +15,8 @@
 #   - le paquet .deb (« make deb » puis « apt install ./blocker-adulte_*.deb »),
 #     dont le postinst appelle exactement le meme blocker-configure.
 #
-# Desinstallation : sudo blocker-uninstall --confirm
-# (procedure manuelle equivalente detaillee dans le README).
+# Desinstallation : elle se fait en quatre phases, il n'y a pas de commande
+# unique. Point de depart : sudo blocker-uninstall --etat
 
 set -uo pipefail
 
@@ -178,10 +178,10 @@ printf '\n'
 printf 'Suivre les reparations automatiques :\n'
 printf '  journalctl -f -u blocker-guard -u blocker-selfheal -u blocker-resolver\n'
 printf '\n'
-printf 'Desinstaller (procedure complete, huit etapes) :\n'
-printf '  sudo blocker-uninstall --dry-run   # voir ce qui serait fait\n'
-printf '  sudo blocker-uninstall --confirm   # executer\n'
-printf '  La procedure manuelle equivalente est dans le README, section « Desinstallation ».\n'
+printf 'Desinstaller — quatre phases, pas de commande unique :\n'
+printf '  sudo blocker-uninstall --etat      # ou en est-on\n'
+printf '  sudo blocker-uninstall --phase 1   # commencer\n'
+printf '  sudo blocker-uninstall --manuel    # procedure manuelle equivalente\n'
 printf '\n'
 
 exit "${rc}"

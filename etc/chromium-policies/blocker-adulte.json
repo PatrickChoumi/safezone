@@ -1,28 +1,33 @@
 {
   "_comment": "blocker-adulte - policy Chromium (composant 3). Deployee dans /etc/chromium/policies/managed/blocker-adulte.json ET /etc/opt/chromium/policies/managed/blocker-adulte.json : l'emplacement varie selon la provenance du paquet (deb Debian, deb Ubuntu, snap). Les deux sont ecrits, aucun n'est cache.",
-
   "DnsOverHttpsMode": "off",
   "DnsOverHttpsTemplates": "",
   "BuiltInDnsClientEnabled": false,
   "QuicAllowed": false,
-
   "IncognitoModeAvailability": 1,
-
   "SafeSitesFilterBehavior": 1,
   "ForceGoogleSafeSearch": true,
   "ForceYouTubeRestrict": 2,
-
   "ProxySettings": {
     "ProxyMode": "system"
   },
-
   "URLBlocklist": [
     "chrome://flags",
     "chrome://net-internals",
     "chrome://net-export"
   ],
-
   "URLAllowlist": [],
-
-  "BackgroundModeEnabled": false
+  "BackgroundModeEnabled": false,
+  "ExtensionSettings": {
+    "*": {
+      "installation_mode": "allowed",
+      "blocked_permissions": [
+        "proxy",
+        "vpnProvider",
+        "socket"
+      ],
+      "blocked_install_message": "Les extensions de type VPN ou proxy sont bloquees par blocker-adulte : elles feraient sortir tout le trafic du navigateur hors du resolveur local. Voir la procedure de retrait dans /usr/share/doc/blocker-adulte/README.md"
+    }
+  },
+  "BlockExternalExtensions": true
 }

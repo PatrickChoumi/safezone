@@ -22,6 +22,11 @@ exiger_root
 exiger_installe
 exiger_commande dig "dnsutils"
 
+# Les valeurs de reference (amont, chemins) viennent de la bibliotheque du
+# projet, pas de constantes recopiees ici qui divergeraient.
+# shellcheck disable=SC1091
+. /usr/lib/blocker-adulte/blocker-common.sh
+
 titre "1. Le resolveur local repond"
 
 if dig +short +time=3 +tries=1 @127.0.0.1 example.com >/dev/null 2>&1; then
@@ -78,7 +83,35 @@ else
     warn "8.8.8.8 n'a pas repondu du tout — soit la redirection fonctionne, soit la machine est hors ligne"
 fi
 
-titre "4. Les regles de redirection sont chargees"
+titre "4. L amont DNS est reellement pilote par blocker.conf"
+
+# L'amont etait autrefois ecrit en dur dans le modele dnsmasq, que le self-heal
+# restaure a chaque passe : le reglage annonce dans blocker.conf n'avait donc
+# aucun effet. On verifie que le fichier genere correspond bien a la config.
+UPCONF=/var/lib/blocker-adulte/blocklists/01-upstream.conf
+if [ -s "${UPCONF}" ]; then
+    ok "fichier d amont genere present"
+    if grep -q "^server=${BLOCKER_UPSTREAM_1}\$" "${UPCONF}"; then
+        ok "amont applique = blocker.conf (${BLOCKER_UPSTREAM_1})"
+    else
+        ko "amont applique different de blocker.conf (${BLOCKER_UPSTREAM_1})"
+        info "corriger : sudo /usr/lib/blocker-adulte/blocker-upstream"
+    fi
+else
+    ko "aucun fichier d amont : dnsmasq n a pas de resolveur en secours"
+    info "corriger : sudo /usr/lib/blocker-adulte/blocker-upstream"
+fi
+
+# Le modele ne doit plus contenir de server= en dur, sinon le reglage
+# redeviendrait fige.
+if grep -q '^server=' /etc/dnsmasq.d/blocker-adulte.conf 2>/dev/null; then
+    ko "des « server= » sont revenus en dur dans le modele dnsmasq"
+    info "ils rendraient BLOCKER_UPSTREAM_1 sans effet."
+else
+    ok "aucun « server= » code en dur dans le modele dnsmasq"
+fi
+
+titre "5. Les regles de redirection sont chargees"
 
 verifier "table ip blocker_adulte_nat presente" \
     nft list table ip blocker_adulte_nat
@@ -89,7 +122,7 @@ else
     ko "aucune regle sur le port 53 dans la table de redirection"
 fi
 
-titre "5. Un domaine de la liste de blocage est bien bloque"
+titre "6. Un domaine de la liste de blocage est bien bloque"
 
 # On teste avec des domaines de resolveur DoH presents dans la liste de base,
 # plutot qu'avec des domaines adultes : le test doit pouvoir tourner n'importe

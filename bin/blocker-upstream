@@ -1,0 +1,94 @@
+#!/bin/bash
+# blocker-adulte — generation des resolveurs amont (composant 1)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-upstream
+# Lance par     : blocker-configure, blocker-selfheal et blocker-list-update
+#
+# POURQUOI CE SCRIPT EXISTE
+#
+# Les adresses amont etaient ecrites en dur dans /etc/dnsmasq.d/blocker-adulte.conf,
+# que le self-heal restaure depuis son modele a chaque passe. Toute modification
+# etait donc effacee dans les cinq minutes, alors que la documentation annoncait
+# un reglage possible depuis blocker.conf : l'amont etait en pratique fige.
+#
+# Les adresses sont desormais generees ici, dans un fichier de la zone d'etat que
+# le self-heal ne remplace pas. BLOCKER_UPSTREAM_1 / _2 de blocker.conf sont donc
+# reellement maitres du reglage.
+#
+# L'amont compte : c'est la seconde barriere, independante des listes locales.
+# Un amont filtrant bloque des domaines que nos listes n'ont pas encore vus.
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+
+DEST="${BLOCKER_STATEDIR}/blocklists"
+SORTIE="${DEST}/01-upstream.conf"
+
+install -d -m 0755 "${DEST}"
+
+# Une adresse invalide empecherait dnsmasq de demarrer : la machine se
+# retrouverait sans DNS du tout, ce qui pousse a tout desinstaller.
+adresse_valide() {
+    printf '%s' "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]+$'
+}
+
+amonts=()
+for a in "${BLOCKER_UPSTREAM_1:-}" "${BLOCKER_UPSTREAM_2:-}"; do
+    [ -n "${a}" ] || continue
+    if adresse_valide "${a}"; then
+        amonts+=("${a}")
+    else
+        blocker_err "adresse amont invalide, ignoree : ${a}"
+    fi
+done
+
+if [ "${#amonts[@]}" -eq 0 ]; then
+    blocker_err "aucun resolveur amont valide dans ${BLOCKER_CONF}"
+    blocker_err "correction : renseigner BLOCKER_UPSTREAM_1 puis relancer ce script"
+    # On ne laisse pas un fichier vide : sans amont, dnsmasq ne resout plus rien.
+    if [ -s "${SORTIE}" ]; then
+        blocker_warn "le fichier en place est conserve"
+        exit 1
+    fi
+    blocker_warn "repli sur Cloudflare for Families (1.1.1.3 / 1.0.0.3)"
+    amonts=(1.1.1.3 1.0.0.3)
+fi
+
+WORK="$(mktemp)"
+trap 'rm -f "${WORK}"' EXIT
+
+{
+    printf '# blocker-adulte — resolveurs amont (genere automatiquement)\n'
+    printf '# Genere le %s par /usr/lib/blocker-adulte/blocker-upstream\n' "$(date -Is)"
+    printf '#\n'
+    printf '# NE PAS MODIFIER A LA MAIN : ce fichier est reecrit a partir de\n'
+    printf '# BLOCKER_UPSTREAM_1 / BLOCKER_UPSTREAM_2 de %s\n' "${BLOCKER_CONF}"
+    printf '#\n'
+    printf '# Changer d amont :\n'
+    printf '#   sudo nano %s\n' "${BLOCKER_CONF}"
+    printf '#   sudo /usr/lib/blocker-adulte/blocker-upstream\n'
+    printf '#   sudo systemctl restart blocker-resolver.service\n\n'
+    for a in "${amonts[@]}"; do
+        printf 'server=%s\n' "${a}"
+    done
+} > "${WORK}"
+
+if command -v dnsmasq >/dev/null 2>&1; then
+    if ! dnsmasq --test --conf-file="${WORK}" >/dev/null 2>&1; then
+        blocker_err "le fichier d amont genere est invalide, mise en place abandonnee"
+        dnsmasq --test --conf-file="${WORK}" >&2 || true
+        exit 1
+    fi
+fi
+
+if [ -e "${SORTIE}" ] && \
+   cmp -s <(grep '^server=' "${WORK}") <(grep '^server=' "${SORTIE}" 2>/dev/null); then
+    exit 0    # inchange : on evite de reecrire et de faire croire a un ecart
+fi
+
+install -m 0644 "${WORK}" "${SORTIE}"
+blocker_repair "resolveurs amont mis a jour : ${amonts[*]}"
+exit 0

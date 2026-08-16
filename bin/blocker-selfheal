@@ -108,6 +108,21 @@ if [ "${policies_apres}" -gt "${policies_avant}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 3 ter. Resolveurs amont conformes a blocker.conf
+# ---------------------------------------------------------------------------
+# Sans amont, dnsmasq ne resout plus rien : la machine parait privee de reseau.
+UP="${BLOCKER_STATEDIR}/blocklists/01-upstream.conf"
+if [ ! -s "${UP}" ]; then
+    note "fichier d amont absent, regeneration"
+    /usr/lib/blocker-adulte/blocker-upstream >/dev/null 2>&1 && \
+        systemctl restart blocker-resolver.service 2>/dev/null || true
+elif ! grep -q "^server=${BLOCKER_UPSTREAM_1}\$" "${UP}" 2>/dev/null; then
+    note "amont du fichier different de blocker.conf, regeneration"
+    /usr/lib/blocker-adulte/blocker-upstream >/dev/null 2>&1 && \
+        systemctl restart blocker-resolver.service 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
 # 3 bis. Derive des adresses SafeSearch
 # ---------------------------------------------------------------------------
 # Ce controle protege contre une panne, pas contre un contournement.

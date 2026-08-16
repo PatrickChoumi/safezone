@@ -339,6 +339,9 @@ printf '  %s- un acces root suffit a tout retirer, en quatre phases documentees%
 printf '  %s- un live USB ou un autre systeme contourne tout%s\n' "${GRIS}" "${Z}"
 printf '  %s- l acces direct par adresse IP echappe a tout filtrage DNS%s\n' "${GRIS}" "${Z}"
 printf '  %s- un endpoint DoH prive sur une IP inconnue passerait%s\n' "${GRIS}" "${Z}"
+printf '  %s- un VPN systeme deja configure sort du perimetre du filtrage DNS%s\n' "${GRIS}" "${Z}"
+printf '  %s- Tor Browser, portable et sans installation, echappe a tout ceci%s\n' "${GRIS}" "${Z}"
+printf '  %s- un autre appareil (telephone, partage 4G) est hors de portee%s\n' "${GRIS}" "${Z}"
 
 printf '\n'
 if [ "${inactifs}" -eq 0 ] && [ "${degrades}" -eq 0 ]; then

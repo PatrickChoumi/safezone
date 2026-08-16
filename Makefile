@@ -40,6 +40,7 @@ install:
 	$(INSTALL_PROG) bin/blocker-selfheal         $(DESTDIR)$(libdir)/blocker-selfheal
 	$(INSTALL_PROG) bin/blocker-list-update      $(DESTDIR)$(libdir)/blocker-list-update
 	$(INSTALL_PROG) bin/blocker-safesearch       $(DESTDIR)$(libdir)/blocker-safesearch
+	$(INSTALL_PROG) bin/blocker-upstream        $(DESTDIR)$(libdir)/blocker-upstream
 	$(INSTALL_PROG) bin/blocker-doh-refresh     $(DESTDIR)$(libdir)/blocker-doh-refresh
 	$(INSTALL_PROG) bin/blocker-apply-policies   $(DESTDIR)$(libdir)/blocker-apply-policies
 	$(INSTALL_PROG) bin/blocker-apply-nftables   $(DESTDIR)$(libdir)/blocker-apply-nftables
@@ -119,8 +120,10 @@ install:
 
 uninstall:
 	@echo "Ne pas utiliser « make uninstall »."
-	@echo "La desinstallation complete passe par : sudo blocker-uninstall --confirm"
-	@echo "(ou la procedure manuelle en huit etapes du README)."
+	@echo "La desinstallation se fait en quatre phases :"
+	@echo "  sudo blocker-uninstall --etat      # ou en est-on"
+	@echo "  sudo blocker-uninstall --phase 1   # commencer"
+	@echo "  sudo blocker-uninstall --manuel    # procedure manuelle equivalente"
 	@exit 1
 
 # Verification syntaxique de tous les scripts du depot.

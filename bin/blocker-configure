@@ -53,6 +53,13 @@ if [ ! -s "${BLOCKER_STATEDIR}/blocklists/00-base.conf" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 1 bis. Resolveurs amont, generes depuis blocker.conf
+# ---------------------------------------------------------------------------
+step "resolveurs amont"
+/usr/lib/blocker-adulte/blocker-upstream || \
+    blocker_err "generation des resolveurs amont en echec"
+
+# ---------------------------------------------------------------------------
 # 2. Fichiers de configuration proteges
 # ---------------------------------------------------------------------------
 step "fichiers de configuration"
@@ -171,5 +178,5 @@ step "immuabilite des fichiers proteges"
 blocker_lock_all
 
 blocker_info "configuration terminee. Etat : systemctl status blocker-guard blocker-resolver"
-blocker_info "desinstallation : /usr/sbin/blocker-uninstall --confirm (voir README)"
+blocker_info "desinstallation en quatre phases : blocker-uninstall --etat"
 exit 0
