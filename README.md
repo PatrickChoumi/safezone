@@ -338,6 +338,37 @@ sudo ./install.sh --dry-run
 **Redémarrez ensuite une fois** : c'est ce qui active le hook initramfs
 (composant 4) et confirme que tout revient bien en place au boot.
 
+### Mettre à jour
+
+```bash
+sudo blocker-update --verifier   # y a-t-il du nouveau ? n'installe rien
+sudo blocker-update              # affiche les changements, puis demande confirmation
+```
+
+L'emplacement du dépôt est mémorisé à l'installation dans
+`/etc/blocker-adulte/source` : rien à retenir. S'il manque (installation par
+`.deb`, dépôt déplacé), l'indiquer une fois avec `--source /chemin` et il sera
+retenu.
+
+**La mise à jour n'est pas automatique, et aucun timer ne la déclenche.**
+Appliquer sans regarder du code venu d'internet, sur une machine où il tournera
+en root, est une mauvaise idée — même quand le dépôt est le vôtre. La commande
+affiche donc toujours les commits et les fichiers touchés avant de demander
+confirmation. La détection peut être automatique ; l'application reste un geste
+conscient.
+
+Quatre garde-fous, chacun vérifié :
+
+| Situation | Comportement |
+|---|---|
+| Modifications locales non validées | **Refus** — la mise à jour les écraserait. Les commandes pour s'en sortir sont affichées |
+| Le code reçu ne passe pas `make check` | **Arrêt avant installation.** Une erreur de syntaxe dans un watchdog laisserait la machine sans protection ; le système reste sur la version précédente |
+| Historiques divergents | **Arrêt** — pas de fusion à l'aveugle |
+| Dépôt local en avance | Le dit, suggère `git push`, n'installe rien |
+
+La commande de retour arrière est affichée à la fin de chaque mise à jour.
+Une passe de self-heal est forcée après coup, les modèles ayant pu changer.
+
 ### Prérequis
 
 Ubuntu 20.04 ou plus récent (ou une Debian équivalente), avec systemd. Système
@@ -408,6 +439,7 @@ existe sans être déclaré ici.
 /usr/lib/blocker-adulte/blocker-apply-nftables
 /usr/sbin/blocker-uninstall
 /usr/sbin/blocker-status
+/usr/sbin/blocker-update
 
 # --- Modèles, listes, tests, documentation ---
 /usr/share/blocker-adulte

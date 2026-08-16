@@ -348,12 +348,16 @@ for script in "${SCRIPTS[@]}"; do
     while IFS= read -r emplacement; do
         [ -n "${emplacement}" ] || continue
         case "${emplacement}" in
-            # Emplacements documentes au manifeste. /usr/sbin en fait partie :
-            # blocker-status et blocker-uninstall y sont poses volontairement,
-            # pour etre dans le PATH de root.
             /usr/lib/blocker-adulte/*|/usr/share/blocker-adulte/*) continue ;;
-            /usr/sbin/blocker-status|/usr/sbin/blocker-uninstall) continue ;;
         esac
+
+        # /usr/sbin accueille volontairement les commandes destinees a root.
+        # Lesquelles ? On le demande au manifeste plutot que de les nommer ici :
+        # une liste ecrite en dur avait deja cesse de suivre les ajouts une
+        # premiere fois, et « blocker-update » l'aurait fait une seconde.
+        if grep -qxF "${emplacement}" "${MANIFESTE}"; then
+            continue
+        fi
         # Depot source ou arbre de construction : reconnu a la presence d'un
         # Makefile et d'un debian/control dans un repertoire ancetre.
         racine="$(dirname "$(dirname "${emplacement}")")"
