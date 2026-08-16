@@ -301,6 +301,43 @@ sur `ioctl` en général n'est posée — le volume rendrait le journal inexploi
 
 ## Installation
 
+### En trois commandes
+
+Testé sur Ubuntu 24.04 et 26.04.
+
+```bash
+git clone https://github.com/PatrickChoumi/safezone.git
+cd safezone
+sudo ./install.sh
+```
+
+`install.sh` installe les dépendances manquantes (`dnsmasq-base`, `nftables`,
+`systemd-resolved`, `auditd`, `dnsutils`, `initramfs-tools`), pose les fichiers,
+active les huit composants et lance la première mise à jour des listes.
+Comptez deux à trois minutes, dont `update-initramfs`.
+
+Puis vérifiez :
+
+```bash
+sudo blocker-status --sonde     # les contournements sont-ils vraiment bloqués ?
+sudo tests/run_all.sh --tout    # la suite complète, watchdogs inclus
+```
+
+`--tout` inclut le test de surveillance croisée, qui **arrête réellement les
+services** et coupe le DNS quelques secondes. C'est le seul critère que je n'ai
+jamais pu vérifier moi-même : le conteneur de développement n'a pas systemd en
+PID 1. Lancez-le au moins une fois.
+
+**Avant de commencer**, si vous voulez voir ce qui va se passer sans rien
+changer :
+
+```bash
+sudo ./install.sh --dry-run
+```
+
+**Redémarrez ensuite une fois** : c'est ce qui active le hook initramfs
+(composant 4) et confirme que tout revient bien en place au boot.
+
 ### Prérequis
 
 Ubuntu 20.04 ou plus récent (ou une Debian équivalente), avec systemd. Système
@@ -388,6 +425,7 @@ existe sans être déclaré ici.
 /etc/blocker-adulte
 /etc/dnsmasq.d/blocker-adulte.conf
 /etc/nftables/blocker-adulte.nft
+/etc/nftables/blocker-adulte-tunnels.nft
 /etc/systemd/resolved.conf.d/blocker-adulte.conf
 /etc/NetworkManager/dispatcher.d/90-blocker-adulte
 /etc/audit/rules.d/blocker-adulte.rules
@@ -694,21 +732,33 @@ honnête de présenter la chose.
 | Contournement | Difficulté | Traité ? |
 |---|---|---|
 | Extension VPN/proxy de navigateur | Aucune compétence, aucun droit root | **Fermé** : permission `proxy` refusée (Chrome/Chromium/Brave), installation d'extensions interdite (Firefox) |
-| VPN système (WireGuard, OpenVPN, client commercial) | Quelques minutes, root requis | **Ouvert** — voir ci-dessous |
-| Tor Browser (portable, sans installation) | Quelques minutes, aucun root | **Ouvert** — conçu pour être indétectable par ce type de filtrage |
+| Tor Browser (portable, sans installation) | Quelques minutes, aucun root | **Fermé au démarrage** : les 10 autorités d'annuaire sont bloquées, le bootstrap échoue. Contournable par bridges obfs4, à demander et saisir à la main |
+| VPN système en configuration par défaut | Quelques minutes, root requis | **Fermé** : WireGuard 51820, OpenVPN 1194, IPsec 500/4500 + ESP/AH, L2TP, PPTP + GRE, proxys SOCKS/HTTP |
+| VPN délibérément placé sur le port 443 | Compétence réelle | **Ouvert** — indiscernable d'une connexion HTTPS |
 | Autre appareil (téléphone, partage 4G) | Immédiat | **Hors de portée** par nature |
 | Live USB / autre système | Quelques minutes | **Hors périmètre** assumé (bootloader jamais touché) |
 | Endpoint DoH privé sur IP inconnue | Compétence technique réelle | **Ouvert** |
 | Accès direct par adresse IP | Compétence technique réelle | **Ouvert** — limite de tout filtrage DNS |
 
-**Pourquoi le VPN système n'est pas traité comme le DoH.** Les fournisseurs DoH
-publient une poignée d'adresses d'amorçage stables : les énumérer marche. Un VPN
-sort en UDP ou TCP vers une adresse quelconque parmi des milliers, renouvelées
-en permanence. Bloquer « les VPN » demanderait soit une liste toujours en retard,
-soit une politique de refus par défaut sur tout le trafic sortant — ce qui rendrait
-la machine inutilisable. Les *noms* des principaux fournisseurs sont bloqués côté
-DNS (on ne peut pas télécharger le client facilement), mais un tunnel déjà
-configuré passe.
+**Comment Tor est fermé.** Tor Browser est portable — il se télécharge, s'extrait
+et se lance sans aucun droit root. Son point faible : pour démarrer, il doit
+joindre l'une des dix autorités d'annuaire, dont les adresses sont **fixes,
+publiques et codées en dur dans le logiciel lui-même**. Bloquées, le bootstrap
+échoue et le navigateur reste sur « Établissement d'une connexion ». Il reste les
+bridges obfs4, qu'il faut demander à Tor puis saisir à la main : c'est exactement
+la démarche délibérée que l'outil n'a pas vocation à empêcher.
+
+**Ce que le blocage VPN fait et ne fait pas.** Il ne bloque pas « les VPN » au
+sens général — ce serait impossible sans refuser tout le trafic sortant, ce qui
+rendrait la machine inutilisable. Il ferme les **configurations par défaut**, qui
+couvrent la quasi-totalité des cas où l'on installe un client en trois clics. Un
+tunnel délibérément placé sur le port 443 en TCP reste indiscernable d'une
+connexion HTTPS et passera.
+
+Les réseaux privés (`10/8`, `172.16/12`, `192.168/16`) sont épargnés : un VPN vers
+la box ou une machine de la maison n'est pas un contournement. Si vous avez besoin
+d'un VPN d'entreprise, `BLOCKER_BLOCK_TUNNELS="non"` désactive toute cette table
+sans toucher au reste.
 
 **Le fond du problème.** Ce système filtre au niveau réseau et DNS *de cette
 machine*. Tout ce qui contourne ce niveau — chiffrement de bout en bout vers un

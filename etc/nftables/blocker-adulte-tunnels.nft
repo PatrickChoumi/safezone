@@ -1,0 +1,141 @@
+#!/usr/sbin/nft -f
+#
+# blocker-adulte — blocage des tunnels : Tor et VPN (composant 2)
+#
+# Installe dans : /etc/nftables/blocker-adulte-tunnels.nft
+# Charge par    : blocker-apply-nftables, seulement si
+#                 BLOCKER_BLOCK_TUNNELS="oui" dans /etc/blocker-adulte/blocker.conf
+#
+# Table separee et chargement conditionnel : ces regles sont les plus
+# susceptibles de gener un usage legitime (VPN d'entreprise, teletravail). Les
+# desactiver ne doit pas demander de toucher au jeu de regles principal.
+#
+# CE QUE CES REGLES FONT ET NE FONT PAS
+#
+# Elles ne « bloquent pas les VPN » au sens general : c'est impossible sans
+# refuser tout le trafic sortant, ce qui rendrait la machine inutilisable. Un
+# tunnel deliberement configure sur le port 443 en TCP reste indiscernable d'une
+# connexion HTTPS ordinaire et passera.
+#
+# Elles ferment les configurations PAR DEFAUT, qui couvrent la quasi-totalite
+# des cas ou l'on installe un client en trois clics : c'est le niveau de
+# friction vise. Qui sait deplacer WireGuard sur le port 443 passera — et aura
+# fait une demarche deliberee, pas impulsive.
+
+table inet blocker_adulte_tunnels
+delete table inet blocker_adulte_tunnels
+table inet blocker_adulte_tunnels {
+
+    # -----------------------------------------------------------------------
+    # Autorites d'annuaire Tor
+    # -----------------------------------------------------------------------
+    # Tor Browser est portable : il se telecharge, s'extrait et se lance sans
+    # aucun droit root. C'est, apres les extensions de navigateur, le
+    # contournement le plus facile du dispositif.
+    #
+    # Son point faible : pour demarrer, le client doit joindre l'une des neuf
+    # autorites d'annuaire, dont les adresses sont FIXES, PUBLIQUES et codees
+    # en dur dans le logiciel lui-meme. Sans elles, le bootstrap echoue et le
+    # navigateur reste bloque sur « Etablissement d'une connexion ».
+    #
+    # Contournement possible : les bridges obfs4, qu'il faut demander
+    # explicitement a Tor puis saisir a la main. C'est precisement la demarche
+    # deliberee que l'outil n'a pas vocation a empecher.
+    #
+    # Ces adresses changent tres rarement (quelques fois par decennie). Si Tor
+    # demarre malgre tout, verifier la liste a jour dans le fichier
+    # src/app/config/auth_dirs.inc du depot Tor.
+    set tor_autorites_v4 {
+        type ipv4_addr
+        elements = {
+            128.31.0.39,        # moria1
+            86.59.21.38,        # tor26
+            45.66.33.45,        # dizum
+            66.111.2.131,       # Serge (autorite des bridges)
+            131.188.40.189,     # gabelmoo
+            193.23.244.244,     # dannenberg
+            171.25.193.9,       # maatuska
+            154.35.175.225,     # Faravahar
+            199.58.81.140,      # longclaw
+            204.13.164.118      # bastet
+        }
+    }
+
+    set tor_autorites_v6 {
+        type ipv6_addr
+        elements = {
+            2001:858:2:2:aabb:0:563b:1526,      # tor26
+            2001:678:558:1000::244,             # dannenberg
+            2001:638:a000:4140::ffff:189,       # gabelmoo
+            2a07:1c44:5800::4d,                 # dizum
+            2620:13:4000:6000::1000:118         # bastet
+        }
+    }
+
+    # -----------------------------------------------------------------------
+    # Ports et protocoles VPN dans leur configuration par defaut
+    # -----------------------------------------------------------------------
+    # Un VPN systeme fait sortir le trafic chiffre vers un tiers qui assure sa
+    # propre resolution DNS : ni le resolveur local ni la redirection nftables
+    # ne le voient. Ces regles ferment les reglages sortis d'usine.
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+
+        # Le resolveur local n'est pas concerne.
+        meta skuid "blocker-adulte" accept
+        ip daddr 127.0.0.0/8 accept
+        ip6 daddr ::1 accept
+
+        # Reseaux prives : un VPN vers une passerelle du reseau local, ou un
+        # tunnel entre machines de la maison, n'a rien a voir avec un
+        # contournement. On les laisse passer.
+        ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 } accept
+
+        # --- Tor -----------------------------------------------------------
+        ip daddr @tor_autorites_v4 reject with tcp reset \
+            comment "Tor : autorite d annuaire, bootstrap impossible"
+        ip6 daddr @tor_autorites_v6 reject with tcp reset \
+            comment "Tor : autorite d annuaire IPv6"
+
+        # Ports d'ecoute habituels des relais Tor. Beaucoup de relais ecoutent
+        # ailleurs, notamment sur 443 : ce n'est qu'une gene supplementaire,
+        # pas une barriere.
+        tcp dport { 9001, 9030, 9050, 9051, 9150, 9151 } reject with tcp reset \
+            comment "Tor : ports de relais et de proxy habituels"
+
+        # --- WireGuard -----------------------------------------------------
+        udp dport 51820 drop comment "WireGuard, port par defaut"
+
+        # --- OpenVPN -------------------------------------------------------
+        udp dport 1194 drop comment "OpenVPN UDP, port par defaut"
+        tcp dport 1194 reject with tcp reset comment "OpenVPN TCP, port par defaut"
+
+        # --- IPsec / IKE ---------------------------------------------------
+        udp dport { 500, 4500 } drop comment "IPsec IKE et NAT-T"
+        meta l4proto { esp, ah } drop comment "IPsec : ESP et AH"
+
+        # --- L2TP et PPTP ---------------------------------------------------
+        udp dport 1701 drop comment "L2TP"
+        tcp dport 1723 reject with tcp reset comment "PPTP"
+        meta l4proto gre drop comment "GRE, transport de PPTP"
+
+        # --- Proxys SOCKS et HTTP sortants ---------------------------------
+        # Ports d'ecoute classiques des proxys publics. Un proxy sur 443 passe.
+        tcp dport { 1080, 3128, 8080, 8118, 9040 } reject with tcp reset \
+            comment "proxy SOCKS ou HTTP sortant"
+    }
+
+    # Meme politique pour le trafic relaye par cette machine.
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+
+        ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } accept
+
+        ip daddr @tor_autorites_v4 reject with tcp reset
+        ip6 daddr @tor_autorites_v6 reject with tcp reset
+        udp dport { 51820, 1194, 500, 4500, 1701 } drop
+        tcp dport { 1194, 1723, 9001, 9030, 9050, 9150 } reject with tcp reset
+        meta l4proto { esp, ah, gre } drop
+    }
+}

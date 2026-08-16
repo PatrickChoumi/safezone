@@ -22,13 +22,14 @@ BLOCKER_USER="blocker-adulte"
 BLOCKER_OPTOUT_FLAG="${BLOCKER_RUNDIR}/uninstall-in-progress"
 
 # Valeurs par defaut, surchargeables par ${BLOCKER_CONF}.
-BLOCKER_UPSTREAM_1="1.1.1.3"          # Cloudflare for Families (filtrant)
-BLOCKER_UPSTREAM_2="1.0.0.3"
+BLOCKER_UPSTREAM_1="94.140.14.15"     # AdGuard DNS Family (adulte + pubs + traqueurs)
+BLOCKER_UPSTREAM_2="94.140.15.16"
 BLOCKER_LISTEN_ADDR="127.0.0.1"
 BLOCKER_LISTEN_PORT="53"
 BLOCKER_GUARD_INTERVAL="15"           # secondes entre deux passes de watchdog
 BLOCKER_LOCK_HOSTS="auto"             # rendre /etc/hosts immuable : oui/non/auto
 BLOCKER_SAFESEARCH="oui"              # forcer le SafeSearch des moteurs : oui/non
+BLOCKER_BLOCK_TUNNELS="oui"           # bloquer Tor et les protocoles VPN : oui/non
 BLOCKER_LIST_URLS="https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
 https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/doh-vpn-proxy-bypass.txt"
 
@@ -155,6 +156,7 @@ blocker_protected_files() {
     fi
     cat <<'EOF'
 /etc/nftables/blocker-adulte.nft
+/etc/nftables/blocker-adulte-tunnels.nft
 /etc/dnsmasq.d/blocker-adulte.conf
 /etc/systemd/resolved.conf.d/blocker-adulte.conf
 /etc/NetworkManager/dispatcher.d/90-blocker-adulte

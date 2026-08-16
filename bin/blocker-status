@@ -164,6 +164,18 @@ else
     trou "Regles nftables absentes : le DNS peut sortir vers n'importe quel serveur."
 fi
 
+# --- 2 bis. Blocage des tunnels ---------------------------------------------
+if [ "${BLOCKER_BLOCK_TUNNELS:-oui}" = "non" ]; then
+    moyen "2 bis. Blocage Tor et VPN" "desactive par configuration"
+    trou "Tor et les VPN par defaut ne sont pas bloques (BLOCKER_BLOCK_TUNNELS=non)."
+elif nft list table inet blocker_adulte_tunnels >/dev/null 2>&1; then
+    ok "2 bis. Blocage Tor et VPN" "actif"
+    detail "autorites d annuaire Tor, WireGuard, OpenVPN, IPsec, L2TP, PPTP, proxys"
+else
+    ko "2 bis. Blocage Tor et VPN" "ABSENT"
+    trou "Tor Browser demarrerait et un VPN par defaut passerait."
+fi
+
 # --- 3. Policies navigateur -------------------------------------------------
 nb_pol=0; nb_attendu=0
 while IFS='|' read -r dir fichier _f; do
@@ -339,8 +351,8 @@ printf '  %s- un acces root suffit a tout retirer, en quatre phases documentees%
 printf '  %s- un live USB ou un autre systeme contourne tout%s\n' "${GRIS}" "${Z}"
 printf '  %s- l acces direct par adresse IP echappe a tout filtrage DNS%s\n' "${GRIS}" "${Z}"
 printf '  %s- un endpoint DoH prive sur une IP inconnue passerait%s\n' "${GRIS}" "${Z}"
-printf '  %s- un VPN systeme deja configure sort du perimetre du filtrage DNS%s\n' "${GRIS}" "${Z}"
-printf '  %s- Tor Browser, portable et sans installation, echappe a tout ceci%s\n' "${GRIS}" "${Z}"
+printf '  %s- un VPN delibere sur le port 443 est indiscernable d un HTTPS%s\n' "${GRIS}" "${Z}"
+printf '  %s- Tor via des bridges obfs4 saisis a la main contourne le blocage%s\n' "${GRIS}" "${Z}"
 printf '  %s- un autre appareil (telephone, partage 4G) est hors de portee%s\n' "${GRIS}" "${Z}"
 
 printf '\n'

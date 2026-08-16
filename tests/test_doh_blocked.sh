@@ -22,6 +22,9 @@ exiger_root
 exiger_installe
 exiger_commande nft "nftables"
 
+# shellcheck disable=SC1091
+. /usr/lib/blocker-adulte/blocker-common.sh
+
 titre "1. Regles nftables de blocage des canaux chiffres"
 
 verifier "table inet blocker_adulte presente" nft list table inet blocker_adulte
@@ -135,7 +138,55 @@ verifier_antiproxy /etc/opt/chrome/policies/managed/blocker-adulte.json chrome
 verifier_antiproxy /etc/chromium/policies/managed/blocker-adulte.json chromium
 verifier_antiproxy /etc/brave/policies/managed/blocker-adulte.json brave
 
-titre "6. Les enregistrements HTTPS/SVCB (type 65) sont filtres"
+titre "6. Tunnels : Tor et VPN par defaut"
+
+# Classe juste apres les extensions dans l'ordre de facilite : Tor Browser est
+# portable et ne demande aucun droit root.
+if [ "${BLOCKER_BLOCK_TUNNELS:-oui}" = "non" ]; then
+    warn "blocage des tunnels desactive par configuration, controles ignores"
+elif nft list table inet blocker_adulte_tunnels >/dev/null 2>&1; then
+    ok "table inet blocker_adulte_tunnels chargee"
+    treg="$(nft list table inet blocker_adulte_tunnels 2>/dev/null)"
+
+    # Tor ne peut pas demarrer sans joindre une autorite d'annuaire : leurs
+    # adresses sont fixes et codees en dur dans le logiciel.
+    n_aut=$(printf '%s' "${treg}" | grep -cE '128\.31\.0\.39|86\.59\.21\.38|171\.25\.193\.9' || true)
+    if [ "${n_aut}" -gt 0 ]; then
+        ok "autorites d annuaire Tor presentes dans le jeu de regles"
+    else
+        ko "aucune autorite d annuaire Tor dans le jeu de regles"
+    fi
+
+    for motif in "51820" "1194" "500, 4500" "1701" "1723" "esp" "gre"; do
+        if printf '%s' "${treg}" | grep -q -- "${motif}"; then
+            ok "protocole/port de tunnel couvert : ${motif}"
+        else
+            ko "protocole/port de tunnel absent : ${motif}"
+        fi
+    done
+
+    # Les reseaux prives doivent rester joignables : un VPN vers la box ou une
+    # machine de la maison n'est pas un contournement.
+    if printf '%s' "${treg}" | grep -q '192.168.0.0/16'; then
+        ok "reseaux prives epargnes (VPN local non casse)"
+    else
+        ko "les reseaux prives ne sont pas epargnes — risque de casser un usage legitime"
+    fi
+
+    # Verification en direct sur une autorite Tor.
+    if command -v timeout >/dev/null 2>&1; then
+        if timeout 4 bash -c 'exec 3<>/dev/tcp/128.31.0.39/443' 2>/dev/null; then
+            ko "l autorite Tor 128.31.0.39 est joignable — Tor pourrait demarrer"
+        else
+            ok "autorite Tor 128.31.0.39 injoignable"
+        fi
+    fi
+else
+    ko "table des tunnels absente : Tor et les VPN par defaut ne sont pas bloques"
+    info "corriger : sudo /usr/lib/blocker-adulte/blocker-apply-nftables --force"
+fi
+
+titre "7. Les enregistrements HTTPS/SVCB (type 65) sont filtres"
 
 # Ces enregistrements annoncent aux navigateurs les endpoints DoH disponibles :
 # les laisser passer permettrait une bascule automatique vers DoH.
@@ -145,7 +196,7 @@ else
     ko "filter-rr=65 absent de /etc/dnsmasq.d/blocker-adulte.conf"
 fi
 
-titre "7. Policies navigateur : DoH desactive"
+titre "8. Policies navigateur : DoH desactive"
 
 trouve=0
 for f in /etc/firefox/policies/policies.json \

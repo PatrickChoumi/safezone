@@ -68,6 +68,8 @@ install:
 		$(DESTDIR)$(sharedir)/conf/dnsmasq-blocker-adulte.conf
 	$(INSTALL_DATA) etc/nftables/blocker-adulte.nft \
 		$(DESTDIR)$(sharedir)/conf/nftables-blocker-adulte.nft
+	$(INSTALL_DATA) etc/nftables/blocker-adulte-tunnels.nft \
+		$(DESTDIR)$(sharedir)/conf/nftables-blocker-adulte-tunnels.nft
 	$(INSTALL_DATA) etc/systemd/resolved.conf.d/blocker-adulte.conf \
 		$(DESTDIR)$(sharedir)/conf/resolved-blocker-adulte.conf
 	$(INSTALL_PROG) etc/NetworkManager/dispatcher.d/90-blocker-adulte \

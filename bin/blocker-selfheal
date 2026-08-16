@@ -80,6 +80,8 @@ verifier_fichier "${BLOCKER_SHAREDIR}/conf/dnsmasq-blocker-adulte.conf" \
                  "/etc/dnsmasq.d/blocker-adulte.conf"
 verifier_fichier "${BLOCKER_SHAREDIR}/conf/nftables-blocker-adulte.nft" \
                  "/etc/nftables/blocker-adulte.nft"
+verifier_fichier "${BLOCKER_SHAREDIR}/conf/nftables-blocker-adulte-tunnels.nft" \
+                 "/etc/nftables/blocker-adulte-tunnels.nft"
 verifier_fichier "${BLOCKER_SHAREDIR}/conf/resolved-blocker-adulte.conf" \
                  "/etc/systemd/resolved.conf.d/blocker-adulte.conf"
 verifier_fichier "${BLOCKER_SHAREDIR}/conf/90-blocker-adulte" \
