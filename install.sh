@@ -144,6 +144,16 @@ fi
 /usr/lib/blocker-adulte/blocker-configure
 rc=$?
 
+# On memorise d'ou vient l'installation : « blocker-update » n'a alors plus
+# besoin qu'on lui rappelle ou le depot a ete clone.
+if [ -d "${SRC}/.git" ]; then
+    install -d -m 0755 /etc/blocker-adulte
+    printf '%s\n' "${SRC}" > /etc/blocker-adulte/source
+    chmod 0644 /etc/blocker-adulte/source
+    info "depot memorise pour les mises a jour : ${SRC}"
+    info "mettre a jour plus tard : sudo blocker-update"
+fi
+
 # ---------------------------------------------------------------------------
 # 5. Premiere mise a jour des listes
 # ---------------------------------------------------------------------------
@@ -177,6 +187,10 @@ printf '  sudo %s/tests/run_all.sh\n' "${SRC}"
 printf '\n'
 printf 'Suivre les reparations automatiques :\n'
 printf '  journalctl -f -u blocker-guard -u blocker-selfheal -u blocker-resolver\n'
+printf '\n'
+printf 'Mettre a jour depuis le depot git :\n'
+printf '  sudo blocker-update --verifier   # voir s il y a du nouveau\n'
+printf '  sudo blocker-update              # relire les changements puis appliquer\n'
 printf '\n'
 printf 'Desinstaller — quatre phases, pas de commande unique :\n'
 printf '  sudo blocker-uninstall --etat      # ou en est-on\n'

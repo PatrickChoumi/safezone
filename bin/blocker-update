@@ -1,0 +1,207 @@
+#!/bin/bash
+# blocker-adulte — mise a jour depuis le depot git
+#
+# Installe dans : /usr/sbin/blocker-update
+#
+# Recupere les modifications du depot, verifie qu'elles sont saines, puis
+# reinstalle. L'emplacement du depot est memorise a l'installation dans
+# /etc/blocker-adulte/source : plus besoin de se rappeler ou on l'avait clone.
+#
+# POURQUOI LA MISE A JOUR N'EST PAS AUTOMATIQUE
+#
+# Appliquer sans regarder du code venu d'internet, sur une machine ou il
+# tournera en root, est une mauvaise idee — meme quand le depot est le sien.
+# Un depot peut etre compromis, ou simplement contenir une modification qu'on
+# n'a pas voulue. Ce script montre donc TOUJOURS ce qui va changer avant de
+# l'appliquer, et demande confirmation.
+#
+# C'est aussi pour cela qu'aucun timer ne lance cette commande : la detection
+# peut etre automatique, l'application reste un geste conscient.
+#
+# Usage :
+#   blocker-update --verifier    regarde s'il y a du nouveau, n'installe rien
+#   blocker-update               affiche les changements puis demande confirmation
+#   blocker-update --oui         applique sans demander (pour un script)
+#   blocker-update --source DIR  utilise ce depot et le memorise
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+
+FICHIER_SOURCE="${BLOCKER_CONFDIR}/source"
+MODE="interactif"
+SOURCE=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --verifier|--check) MODE="verifier" ;;
+        --oui|--yes|-y)     MODE="auto" ;;
+        --source)           SOURCE="${2:-}"; shift ;;
+        -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "Argument inconnu : $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+if [ -t 1 ]; then
+    VERT=$'\033[32m'; ROUGE=$'\033[31m'; GRAS=$'\033[1m'; GRIS=$'\033[90m'; Z=$'\033[0m'
+else
+    VERT=""; ROUGE=""; GRAS=""; GRIS=""; Z=""
+fi
+
+# ---------------------------------------------------------------------------
+# Localiser le depot
+# ---------------------------------------------------------------------------
+if [ -z "${SOURCE}" ] && [ -r "${FICHIER_SOURCE}" ]; then
+    SOURCE="$(cat "${FICHIER_SOURCE}")"
+fi
+
+if [ -z "${SOURCE}" ]; then
+    cat >&2 <<EOF
+Emplacement du depot inconnu.
+
+Il est normalement memorise a l'installation dans ${FICHIER_SOURCE}.
+S'il manque — installation par paquet .deb, ou depot deplace depuis —
+l'indiquer une fois, il sera retenu :
+
+  sudo blocker-update --source /chemin/vers/safezone
+EOF
+    exit 1
+fi
+
+if [ ! -d "${SOURCE}/.git" ]; then
+    blocker_err "${SOURCE} n'est pas un depot git"
+    blocker_err "indiquer le bon chemin : sudo blocker-update --source /chemin/vers/safezone"
+    exit 1
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+    blocker_err "git est requis (sudo apt install git)"
+    exit 1
+fi
+
+# Le chemin fourni est memorise, comme le message d'aide le promet : sans cela
+# il faudrait le redonner a chaque fois.
+SOURCE="$(cd "${SOURCE}" && pwd)"
+if [ ! -r "${FICHIER_SOURCE}" ] || [ "$(cat "${FICHIER_SOURCE}")" != "${SOURCE}" ]; then
+    install -d -m 0755 "${BLOCKER_CONFDIR}"
+    printf '%s\n' "${SOURCE}" > "${FICHIER_SOURCE}"
+    chmod 0644 "${FICHIER_SOURCE}"
+    blocker_info "depot memorise pour les prochaines fois : ${SOURCE}"
+fi
+
+# git refuse de travailler dans un depot appartenant a un autre utilisateur —
+# le cas normal ici, puisqu'on est root et que le clone appartient a l'humain.
+git config --global --get-all safe.directory 2>/dev/null | grep -qxF "${SOURCE}" || \
+    git config --global --add safe.directory "${SOURCE}" 2>/dev/null || true
+
+cd "${SOURCE}" || { blocker_err "impossible d'entrer dans ${SOURCE}"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Y a-t-il du nouveau ?
+# ---------------------------------------------------------------------------
+printf '%sDepot :%s %s\n' "${GRAS}" "${Z}" "${SOURCE}"
+
+BRANCHE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+printf '%sBranche :%s %s\n\n' "${GRAS}" "${Z}" "${BRANCHE}"
+
+# Des modifications locales seraient ecrasees par la mise a jour : on prefere
+# s'arreter plutot que de faire disparaitre le travail de quelqu'un.
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    printf '%sModifications locales non validees :%s\n' "${ROUGE}" "${Z}"
+    git status --short | sed 's/^/  /'
+    printf '\nLa mise a jour les ecraserait. Les valider ou les annuler d abord :\n'
+    printf '  cd %s && git stash      # les mettre de cote\n' "${SOURCE}"
+    printf '  cd %s && git checkout . # les jeter\n' "${SOURCE}"
+    exit 1
+fi
+
+blocker_info "recuperation des modifications distantes"
+if ! git fetch --quiet origin "${BRANCHE}" 2>/dev/null; then
+    blocker_err "git fetch a echoue (machine hors ligne ?)"
+    exit 1
+fi
+
+LOCAL="$(git rev-parse HEAD)"
+DISTANT="$(git rev-parse "origin/${BRANCHE}" 2>/dev/null || echo "${LOCAL}")"
+
+if [ "${LOCAL}" = "${DISTANT}" ]; then
+    printf '%sDeja a jour%s (%s)\n' "${VERT}" "${Z}" "${LOCAL:0:8}"
+    exit 0
+fi
+
+NB="$(git rev-list --count "${LOCAL}..${DISTANT}" 2>/dev/null || echo '?')"
+printf '%s%s nouveau(x) commit(s)%s : %s -> %s\n\n' \
+    "${GRAS}" "${NB}" "${Z}" "${LOCAL:0:8}" "${DISTANT:0:8}"
+
+git log --oneline --no-decorate "${LOCAL}..${DISTANT}" 2>/dev/null | head -20 | sed 's/^/  /'
+printf '\n%sFichiers modifies :%s\n' "${GRAS}" "${Z}"
+git diff --stat "${LOCAL}..${DISTANT}" 2>/dev/null | tail -20 | sed 's/^/  /'
+
+if [ "${MODE}" = "verifier" ]; then
+    printf '\nMode verification : rien n a ete installe.\n'
+    printf 'Pour appliquer : sudo blocker-update\n'
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Confirmation
+# ---------------------------------------------------------------------------
+if [ "${MODE}" = "interactif" ]; then
+    printf '\n%sCes modifications vont s executer en root sur cette machine.%s\n' "${GRAS}" "${Z}"
+    printf 'Les avez-vous relues ? Appliquer la mise a jour ? [o/N] '
+    read -r reponse </dev/tty || reponse=""
+    case "${reponse}" in
+        o|O|oui|y|Y|yes) ;;
+        *) printf 'Annule. Rien n a ete modifie.\n'; exit 0 ;;
+    esac
+fi
+
+# ---------------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------------
+printf '\n%s=== Mise a jour ===%s\n' "${GRAS}" "${Z}"
+
+if ! git merge --ff-only "origin/${BRANCHE}" 2>&1 | sed 's/^/  /'; then
+    blocker_err "la mise a jour n est pas une avance rapide — historique divergent"
+    blocker_err "regler a la main : cd ${SOURCE} && git status"
+    exit 1
+fi
+
+# On refuse d'installer du code qui ne passe pas ses propres controles : une
+# erreur de syntaxe dans un watchdog laisserait la machine sans protection.
+blocker_info "verification du code recupere (make check)"
+if ! make -C "${SOURCE}" check 2>&1 | tail -5 | sed 's/^/  /'; then
+    blocker_err "le code recupere ne passe pas « make check », installation abandonnee"
+    blocker_err "le systeme reste sur la version precedente, toujours fonctionnelle"
+    blocker_err "revenir en arriere : cd ${SOURCE} && git reset --hard ${LOCAL}"
+    exit 1
+fi
+
+blocker_info "installation des fichiers"
+if ! make -C "${SOURCE}" install DESTDIR=/ >/dev/null 2>&1; then
+    blocker_err "« make install » a echoue"
+    exit 1
+fi
+
+blocker_info "reconfiguration"
+/usr/lib/blocker-adulte/blocker-configure || \
+    blocker_warn "blocker-configure a signale une erreur, voir ci-dessus"
+
+# La mise a jour peut avoir change les modeles de configuration : on force une
+# passe de self-heal plutot que d'attendre le prochain creneau de cinq minutes.
+if [ -x /usr/lib/blocker-adulte/blocker-selfheal ]; then
+    /usr/lib/blocker-adulte/blocker-selfheal >/dev/null 2>&1 || true
+fi
+
+printf '\n%sMise a jour terminee%s : %s -> %s\n' "${VERT}" "${Z}" "${LOCAL:0:8}" "${DISTANT:0:8}"
+printf '\nVerifier que tout va bien :\n'
+printf '  sudo blocker-status\n'
+printf '  sudo %s/tests/run_all.sh\n' "${SOURCE}"
+printf '\n%sEn cas de probleme, revenir en arriere :%s\n' "${GRIS}" "${Z}"
+printf '  %scd %s && git reset --hard %s && sudo ./install.sh%s\n' \
+    "${GRIS}" "${SOURCE}" "${LOCAL:0:8}" "${Z}"
+
+exit 0
