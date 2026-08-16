@@ -132,6 +132,27 @@ if [ "${LOCAL}" = "${DISTANT}" ]; then
     exit 0
 fi
 
+# Quatre situations, pas deux. Sans cette distinction, un depot local EN AVANCE
+# sur le distant affichait le diff a l'envers — « 222 suppressions » — et le
+# merge --ff-only echouait ensuite sans explication utile.
+if git merge-base --is-ancestor "${DISTANT}" "${LOCAL}" 2>/dev/null; then
+    NB_AVANCE="$(git rev-list --count "${DISTANT}..${LOCAL}" 2>/dev/null || echo '?')"
+    printf '%sDepot local en avance de %s commit(s) sur origin/%s.%s\n' \
+        "${VERT}" "${NB_AVANCE}" "${BRANCHE}" "${Z}"
+    printf 'Rien a recuperer. Pour publier vos modifications :\n'
+    printf '  cd %s && git push\n' "${SOURCE}"
+    exit 0
+fi
+
+if ! git merge-base --is-ancestor "${LOCAL}" "${DISTANT}" 2>/dev/null; then
+    printf '%sHistoriques divergents%s : le depot local et origin/%s ont chacun\n' \
+        "${ROUGE}" "${Z}" "${BRANCHE}"
+    printf 'des commits que l autre n a pas. La mise a jour automatique s arrete ici :\n'
+    printf 'fusionner a l aveugle risquerait de perdre du travail.\n\n'
+    printf '  cd %s && git log --oneline --graph --all -20\n' "${SOURCE}"
+    exit 1
+fi
+
 NB="$(git rev-list --count "${LOCAL}..${DISTANT}" 2>/dev/null || echo '?')"
 printf '%s%s nouveau(x) commit(s)%s : %s -> %s\n\n' \
     "${GRAS}" "${NB}" "${Z}" "${LOCAL:0:8}" "${DISTANT:0:8}"
