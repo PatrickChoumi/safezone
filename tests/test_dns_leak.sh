@@ -20,7 +20,7 @@ set -u
 
 exiger_root
 exiger_installe
-exiger_commande dig "dnsutils"
+exiger_commande dig "bind9-dnsutils"
 
 # Les valeurs de reference (amont, chemins) viennent de la bibliotheque du
 # projet, pas de constantes recopiees ici qui divergeraient.
@@ -29,8 +29,32 @@ exiger_commande dig "dnsutils"
 
 titre "1. Le resolveur local repond"
 
-if dig +short +time=3 +tries=1 @127.0.0.1 example.com >/dev/null 2>&1; then
-    ok "127.0.0.1:53 repond aux requetes"
+# La sonde interroge un nom que le resolveur repond LUI-MEME, pris dans ses
+# propres listes de blocage (« address=/domaine/# »). Interroger example.com
+# imposerait un aller-retour vers l'amont : un reseau lent, ou un resolveur
+# qui vient d'etre redemarre par un test precedent, faisait alors echouer le
+# controle alors que dnsmasq repondait parfaitement — ce qu'on cherche a
+# verifier ici, c'est que le port 53 local est bien servi, pas que l'amont
+# est joignable (sections 3 et 6).
+sonde_nom="$(cat "${BLOCKER_STATEDIR}"/blocklists/*.conf 2>/dev/null \
+             | sed -n 's|^address=/\([^/]*\)/.*|\1|p' | head -1)"
+if [ -z "${sonde_nom}" ]; then
+    sonde_nom="example.com"
+    info "aucune liste de blocage lisible : sonde sur ${sonde_nom} (aller-retour amont)"
+fi
+
+repond=0
+for essai in 1 2 3; do
+    if dig +short +time=3 +tries=1 @127.0.0.1 "${sonde_nom}" >/dev/null 2>&1; then
+        repond=1
+        [ "${essai}" -gt 1 ] && info "a repondu au ${essai}e essai"
+        break
+    fi
+    sleep 1
+done
+
+if [ "${repond}" -eq 1 ]; then
+    ok "127.0.0.1:53 repond aux requetes (sonde : ${sonde_nom})"
 else
     ko "127.0.0.1:53 ne repond pas — blocker-resolver.service tourne-t-il ?"
     info "journalctl -u blocker-resolver -n 30"

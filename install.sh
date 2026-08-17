@@ -92,6 +92,18 @@ log "dependances"
 
 DEPS="dnsmasq-base nftables systemd-resolved auditd curl e2fsprogs initramfs-tools"
 
+# « dig » n'est pas une commodite de debogage ici : blocker-safesearch s'en sert
+# pour resoudre les hotes stricts, blocker-guard et blocker-selfheal pour verifier
+# que le resolveur repond, « blocker-status --sonde » pour toutes ses sondes, et
+# la moitie des tests refusent de demarrer sans lui. Il vient de bind9-dnsutils
+# sur les versions recentes et de dnsutils sur les plus anciennes : on demande
+# celui que la distribution connait plutot qu'un nom qui pourrait ne pas exister.
+if command -v apt-cache >/dev/null 2>&1 && apt-cache show bind9-dnsutils >/dev/null 2>&1; then
+    DEPS="${DEPS} bind9-dnsutils"
+else
+    DEPS="${DEPS} dnsutils"
+fi
+
 manquants=""
 for pkg in ${DEPS}; do
     if ! dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q 'install ok installed'; then

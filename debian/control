@@ -13,12 +13,12 @@ Depends: ${misc:Depends},
          nftables,
          systemd,
          curl,
-         e2fsprogs
+         e2fsprogs,
+         bind9-dnsutils | dnsutils
 Recommends: systemd-resolved,
             auditd,
             initramfs-tools,
-            network-manager,
-            dnsutils
+            network-manager
 Description: Blocage de contenu adulte, persistant et distribue
  Outil auto-heberge de blocage de contenu adulte pour une machine Ubuntu
  personnelle, concu pour resister a une desactivation impulsive par la

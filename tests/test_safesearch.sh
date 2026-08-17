@@ -22,7 +22,7 @@ set -u
 
 exiger_root
 exiger_installe
-exiger_commande dig "dnsutils"
+exiger_commande dig "bind9-dnsutils"
 
 FS=/var/lib/blocker-adulte/blocklists/05-safesearch.conf
 
@@ -116,16 +116,34 @@ titre "5. Chaque entree est structurellement capable de forcer quelque chose"
 # On interroge l'amont directement, sous l'identite blocker-adulte : passer par
 # notre propre resolveur renverrait l'adresse deja reecrite et le controle
 # n'aurait aucun sens.
+#
+# Une egalite d'adresses ne suffit cependant pas a conclure. Un amont filtrant
+# — AdGuard Family, l'amont par defaut — applique lui-meme le SafeSearch cote
+# serveur : il renvoie l'adresse stricte AUSSI pour le domaine normal, et les
+# deux resolutions coincident tout a fait legitimement. Pour departager les deux
+# situations on rejoue la resolution du domaine normal via un resolveur qui, lui,
+# ne reecrit rien.
 SRC=/usr/lib/blocker-adulte/blocker-safesearch
+NEUTRES="1.1.1.1 8.8.8.8 9.9.9.10"
 
-resoudre_amont() {
-    local nom="$1" sortie=""
+resoudre_via() {
+    local serveur="$1" nom="$2" sortie=""
     if command -v runuser >/dev/null 2>&1 && getent passwd blocker-adulte >/dev/null 2>&1; then
         sortie="$(runuser -u blocker-adulte -- dig +short +time=4 +tries=2 -tA \
-                  "@${BLOCKER_UPSTREAM_1}" "${nom}" 2>/dev/null)"
+                  "@${serveur}" "${nom}" 2>/dev/null)"
     fi
     printf '%s\n' "${sortie}" | grep -E '^[0-9.]+$' | sort -u | tr '\n' ' ' | sed 's/ $//'
 }
+
+resoudre_amont() { resoudre_via "${BLOCKER_UPSTREAM_1}" "$1"; }
+
+# Premier resolveur neutre joignable, s'il y en a un. Les requetes partent sous
+# l'identite blocker-adulte, la seule exemptee de la redirection nftables du
+# port 53 : c'est bien un resolveur externe qui repond, pas le notre.
+NEUTRE=""
+for s in ${NEUTRES}; do
+    if [ -n "$(resoudre_via "${s}" example.com)" ]; then NEUTRE="${s}"; break; fi
+done
 
 if [ ! -r "${SRC}" ]; then
     warn "${SRC} illisible, controle ignore"
@@ -139,6 +157,13 @@ else
     else
         nb_entrees=$(printf '%s\n' "${entrees}" | wc -l)
         ok "${nb_entrees} entrees extraites de correspondances()"
+
+        if [ -n "${NEUTRE}" ]; then
+            info "resolveur de comparaison non filtrant : ${NEUTRE}"
+        else
+            info "aucun resolveur non filtrant joignable : une egalite d'adresses"
+            info "ne pourra pas etre departagee et sera signalee sans conclure."
+        fi
 
         while IFS='|' read -r hote domaines; do
             [ -n "${hote}" ] || continue
@@ -156,13 +181,35 @@ else
                 continue
             fi
 
-            if [ "${ip_stricte}" = "${ip_normale}" ]; then
-                ko "${hote} : adresse IDENTIQUE a celle de ${premier} (${ip_stricte})"
-                info "cette entree ne peut rien forcer : le serveur ne distingue les"
-                info "deux requetes que par l'en-tete Host, hors de portee du DNS."
-                info "Mecanisme probablement par cookie ou parametre d'URL : a retirer."
-            else
+            if [ "${ip_stricte}" != "${ip_normale}" ]; then
                 ok "${hote} : adresse dediee (${ip_stricte}) distincte de ${premier}"
+                continue
+            fi
+
+            # Egalite. Deux explications possibles, opposees : soit l'entree ne
+            # force rien du tout, soit l'amont applique deja le SafeSearch et
+            # renvoie l'adresse stricte pour les deux noms. Le resolveur neutre
+            # tranche ; sans lui, on ne conclut pas.
+            if [ -z "${NEUTRE}" ]; then
+                warn "${hote} : meme adresse que ${premier} (${ip_stricte}) — indepartageable"
+                info "aucun resolveur non filtrant joignable pour verifier si c'est"
+                info "l'amont ${BLOCKER_UPSTREAM_1} qui reecrit deja ${premier}."
+                continue
+            fi
+
+            ip_neutre="$(resoudre_via "${NEUTRE}" "${premier}")"
+            if [ -z "${ip_neutre}" ]; then
+                warn "${premier} ne resout pas via ${NEUTRE}, comparaison ignoree"
+            elif [ "${ip_neutre}" != "${ip_stricte}" ]; then
+                ok "${hote} : adresse dediee (${ip_stricte}), l'amont force deja le SafeSearch"
+                info "${premier} vaut ${ip_neutre} via ${NEUTRE} mais ${ip_stricte} via"
+                info "${BLOCKER_UPSTREAM_1} : l'entree reste utile si l'amont change."
+            else
+                ko "${hote} : adresse IDENTIQUE a celle de ${premier} (${ip_stricte})"
+                info "meme constat via ${NEUTRE}, qui ne filtre pas : cette entree ne peut"
+                info "rien forcer — le serveur ne distingue les deux requetes que par"
+                info "l'en-tete Host, hors de portee du DNS. Mecanisme probablement par"
+                info "cookie ou parametre d'URL : a retirer."
             fi
         done <<< "${entrees}"
     fi

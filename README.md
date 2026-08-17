@@ -312,7 +312,7 @@ sudo ./install.sh
 ```
 
 `install.sh` installe les dépendances manquantes (`dnsmasq-base`, `nftables`,
-`systemd-resolved`, `auditd`, `dnsutils`, `initramfs-tools`), pose les fichiers,
+`systemd-resolved`, `auditd`, `bind9-dnsutils`, `initramfs-tools`), pose les fichiers,
 active les huit composants et lance la première mise à jour des listes.
 Comptez deux à trois minutes, dont `update-initramfs`.
 
