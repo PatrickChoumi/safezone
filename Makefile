@@ -50,6 +50,7 @@ install:
 	$(INSTALL_PROG) blocker-uninstall.sh         $(DESTDIR)$(sbindir)/blocker-uninstall
 	$(INSTALL_PROG) bin/blocker-status           $(DESTDIR)$(sbindir)/blocker-status
 	$(INSTALL_PROG) bin/blocker-update           $(DESTDIR)$(sbindir)/blocker-update
+	$(INSTALL_PROG) bin/blocker-block            $(DESTDIR)$(sbindir)/blocker-block
 
 	# --- Unites systemd ----------------------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(unitdir)

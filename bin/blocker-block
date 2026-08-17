@@ -1,0 +1,153 @@
+#!/bin/bash
+# blocker-adulte — liste de blocage personnelle
+#
+# Installe dans : /usr/sbin/blocker-block
+#
+# POURQUOI CETTE COMMANDE EXISTE
+#
+# Les listes StevenBlack et Hagezi ciblent des domaines DEDIES au contenu
+# adulte. Elles ne peuvent rien contre ce qui vit a l'interieur d'une
+# plateforme par ailleurs normale : un subreddit, un compte X, un blog Tumblr.
+# Bloquer reddit.com en entier casserait l'usage legitime ; ne rien faire
+# laisse ouvert un chemin bien plus proche du geste impulsif que reconfigurer
+# un VPN — deriver depuis un onglet deja ouvert.
+#
+# Il n'existe pas de bonne reponse generique a ce probleme : la liste des
+# plateformes qui posent probleme est propre a chacun. Cette commande sert donc
+# a la tenir soi-meme.
+#
+# Le retrait demande une confirmation, sans plus : ce sont VOS blocages, pas
+# ceux de l'outil. La friction des quatre phases protege l'outil lui-meme,
+# elle n'a pas a s'appliquer a une liste qu'on tient a la main.
+#
+# Usage :
+#   blocker-block reddit.com x.com     bloquer un ou plusieurs domaines
+#   blocker-block --liste              voir la liste personnelle
+#   blocker-block --retirer reddit.com retirer un domaine (confirmation)
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+
+PERSO="${BLOCKER_STATEDIR}/blocklists/50-perso.conf"
+
+if [ -t 1 ]; then
+    VERT=$'\033[32m'; GRAS=$'\033[1m'; GRIS=$'\033[90m'; Z=$'\033[0m'
+else
+    VERT=""; GRAS=""; GRIS=""; Z=""
+fi
+
+entete() {
+    cat <<EOF
+# blocker-adulte — liste de blocage personnelle
+#
+# Tenue par « blocker-block ». Ce fichier n'est jamais ecrase par la mise a
+# jour des listes ni par le self-heal : ce que vous ajoutez ici reste.
+#
+# Format dnsmasq : « address=/domaine/# » couvre le domaine ET tous ses
+# sous-domaines.
+EOF
+}
+
+domaine_valide() {
+    printf '%s' "$1" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$'
+}
+
+lister() {
+    if [ ! -s "${PERSO}" ]; then
+        printf 'Aucun domaine dans la liste personnelle.\n\n'
+        printf 'En ajouter :\n  sudo blocker-block reddit.com\n'
+        return 0
+    fi
+    printf '%sListe personnelle%s (%s)\n\n' "${GRAS}" "${Z}" "${PERSO}"
+    grep '^address=/' "${PERSO}" 2>/dev/null | sed 's|^address=/||; s|/#$||' | sort | sed 's/^/  /'
+    printf '\n%s%d domaine(s).%s\n' "${GRIS}" "$(grep -c '^address=/' "${PERSO}" 2>/dev/null || echo 0)" "${Z}"
+}
+
+recharger() {
+    # Une liste invalide empecherait le resolveur de demarrer : on la fait
+    # valider par dnsmasq avant de recharger quoi que ce soit.
+    if command -v dnsmasq >/dev/null 2>&1 && \
+       ! dnsmasq --test --conf-file="${PERSO}" >/dev/null 2>&1; then
+        blocker_err "le fichier genere est invalide, rechargement annule"
+        return 1
+    fi
+    # Un SIGHUP ne relit pas les « address= » d'un conf-dir : il faut un
+    # redemarrage complet du resolveur.
+    if systemctl restart blocker-resolver.service 2>/dev/null; then
+        blocker_info "resolveur redemarre, blocage actif immediatement"
+    else
+        blocker_warn "resolveur non redemarre — le faire a la main :"
+        blocker_warn "  sudo systemctl restart blocker-resolver.service"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+    --liste|--list) lister; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    "")
+        printf 'Aucun domaine indique.\n\n'
+        printf '  sudo blocker-block reddit.com x.com    bloquer\n'
+        printf '  sudo blocker-block --liste             voir la liste\n'
+        printf '  sudo blocker-block --retirer DOMAINE   retirer\n\n'
+        lister
+        exit 1
+        ;;
+esac
+
+install -d -m 0755 "$(dirname "${PERSO}")"
+[ -s "${PERSO}" ] || entete > "${PERSO}"
+
+# --- Retrait ----------------------------------------------------------------
+if [ "$1" = "--retirer" ] || [ "$1" = "--remove" ]; then
+    shift
+    [ $# -gt 0 ] || { echo "Indiquer au moins un domaine a retirer." >&2; exit 2; }
+
+    for d in "$@"; do
+        if ! grep -q "^address=/${d}/" "${PERSO}" 2>/dev/null; then
+            printf '  %s n est pas dans la liste personnelle.\n' "${d}"
+            continue
+        fi
+        printf 'Retirer %s de votre liste de blocage ? [o/N] ' "${d}"
+        read -r rep </dev/tty || rep=""
+        case "${rep}" in
+            o|O|oui|y|Y|yes)
+                sed -i "\|^address=/${d}/|d" "${PERSO}"
+                blocker_notice "domaine retire de la liste personnelle : ${d}"
+                ;;
+            *) printf '  Conserve.\n' ;;
+        esac
+    done
+    recharger
+    exit 0
+fi
+
+# --- Ajout ------------------------------------------------------------------
+ajoutes=0
+for d in "$@"; do
+    d="${d#http://}"; d="${d#https://}"; d="${d%%/*}"; d="${d#www.}"
+
+    if ! domaine_valide "${d}"; then
+        blocker_err "domaine invalide, ignore : ${d}"
+        continue
+    fi
+    if grep -q "^address=/${d}/" "${PERSO}" 2>/dev/null; then
+        printf '  %s deja bloque.\n' "${d}"
+        continue
+    fi
+
+    printf 'address=/%s/#\n' "${d}" >> "${PERSO}"
+    printf '  %s+%s %s bloque (et tous ses sous-domaines)\n' "${VERT}" "${Z}" "${d}"
+    blocker_notice "domaine ajoute a la liste personnelle : ${d}"
+    ajoutes=$((ajoutes + 1))
+done
+
+if [ "${ajoutes}" -gt 0 ]; then
+    recharger
+    printf '\n%sVerifier :%s dig +short @127.0.0.1 %s\n' "${GRIS}" "${Z}" "$1"
+fi
+
+exit 0

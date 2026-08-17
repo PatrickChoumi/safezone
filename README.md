@@ -440,6 +440,7 @@ existe sans être déclaré ici.
 /usr/sbin/blocker-uninstall
 /usr/sbin/blocker-status
 /usr/sbin/blocker-update
+/usr/sbin/blocker-block
 
 # --- Modèles, listes, tests, documentation ---
 /usr/share/blocker-adulte
@@ -755,6 +756,38 @@ exécutées contre une installation complète, pas d'une analyse théorique.
 Les quatre dernières lignes sont les vraies portes de sortie. Elles demandent
 toutes de savoir précisément quoi faire — ce qui est exactement le niveau de
 friction visé : pénible et délibéré, pas impossible.
+
+### Le contenu à l'intérieur des plateformes généralistes
+
+C'est la limite la plus proche de l'objectif réel, et la plus honnête à
+énoncer : **le filtrage DNS ne peut rien** contre un subreddit, un compte X ou
+un blog Tumblr. Ces domaines ne peuvent pas être bloqués sans casser un usage
+légitime, et dériver depuis un onglet déjà ouvert est bien plus proche du geste
+impulsif que reconfigurer un VPN.
+
+Ce que l'outil fait déjà, partiellement :
+
+| Navigateur | Filtrage au niveau URL |
+|---|---|
+| Chrome, Chromium, Brave | `SafeSitesFilterBehavior: 1` — filtre les URL adultes, y compris sur des plateformes généralistes |
+| Firefox | **Aucun équivalent.** Mozilla ne fournit pas de policy comparable |
+
+Ce que vous pouvez faire, si l'une de ces plateformes est un point de
+vulnérabilité pour vous :
+
+```bash
+sudo blocker-block reddit.com        # bloque le domaine et ses sous-domaines
+sudo blocker-block --liste           # voir votre liste
+sudo blocker-block --retirer reddit.com
+```
+
+La liste vit dans `/var/lib/blocker-adulte/blocklists/50-perso.conf` et n'est
+jamais écrasée par la mise à jour des listes ni par le self-heal. Le retrait
+demande une simple confirmation : ce sont **vos** blocages, la friction des
+quatre phases protège l'outil, pas une liste que vous tenez à la main.
+
+Les front-ends alternatifs (`libreddit`, `teddit`, `redlib`…) sont des domaines
+dédiés, donc blocables individuellement de la même façon.
 
 ### Ce qui reste ouvert, par ordre de facilité
 
