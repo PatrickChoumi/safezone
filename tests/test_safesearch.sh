@@ -95,15 +95,65 @@ titre "4. Les services legitimes ne sont pas casses"
 
 # Une regression ici est bien plus grave qu'un filtre manquant : elle rend la
 # machine penible et pousse a tout desinstaller.
+#
+# « Pas de reponse » et « reponse 0.0.0.0 » ne veulent pas dire la meme chose et
+# etaient auparavant confondus dans un meme echec. Un 0.0.0.0 est un blocage
+# bien reel, a corriger. Un silence n'est pas une preuve : c'est une absence de
+# preuve, et l'amont met parfois plus de trois secondes a repondre — surtout sur
+# un resolveur qui vient d'etre redemarre, donc a cache froid. On separe donc
+# les trois causes possibles au lieu d'accuser l'outil par defaut.
+verifier_service_legitime() {
+    local d="$1" r="" essai fichier amont
+
+    for essai in 1 2 3; do
+        r="$(dig +short +time=5 +tries=1 @127.0.0.1 "${d}" 2>/dev/null \
+             | grep -E '^[0-9.]+$' | head -1)"
+        [ -n "${r}" ] && break
+        sleep 1
+    done
+
+    case "${r}" in
+        0.0.0.0)
+            ko "${d} est bloque (0.0.0.0) — service casse"
+            fichier="$(grep -l "^address=/${d}/" \
+                       "${BLOCKER_STATEDIR}"/blocklists/*.conf 2>/dev/null | head -1)"
+            if [ -n "${fichier}" ]; then
+                info "entree fautive dans ${fichier}"
+            else
+                info "aucune entree exacte : un domaine parent d une liste amont"
+                info "l englobe probablement (« address=/X/ » couvre les sous-domaines)."
+            fi
+            ;;
+        216.239.38.*)
+            ko "${d} redirige vers le SafeSearch — service casse"
+            info "verifier ${FS} : seuls les hotes de recherche doivent y figurer."
+            ;;
+        "")
+            # Le resolveur local n'a rien renvoye en trois essais. Reste a savoir
+            # si c'est lui ou l'amont : on interroge l'amont directement, sous
+            # l'identite exemptee de la redirection nftables.
+            amont=""
+            if command -v runuser >/dev/null 2>&1 && \
+               getent passwd "${BLOCKER_USER:-blocker-adulte}" >/dev/null 2>&1; then
+                amont="$(runuser -u "${BLOCKER_USER:-blocker-adulte}" -- \
+                         dig +short +time=5 +tries=2 -tA "@${BLOCKER_UPSTREAM_1}" "${d}" \
+                         2>/dev/null | grep -E '^[0-9.]+$' | head -1)"
+            fi
+            if [ -n "${amont}" ]; then
+                ko "${d} : l amont repond (${amont}) mais le resolveur local ne renvoie rien"
+                info "la panne est bien de notre cote : journalctl -u blocker-resolver -n 30"
+            else
+                warn "${d} : aucune reponse, de l amont ${BLOCKER_UPSTREAM_1} non plus"
+                info "ni blocage ni redirection : amont lent ou injoignable a cet instant."
+            fi
+            ;;
+        *) ok "${d} -> ${r} (intact)" ;;
+    esac
+}
+
 for d in mail.google.com drive.google.com accounts.google.com calendar.google.com \
          docs.google.com photos.google.com; do
-    r="$(dig +short +time=3 +tries=1 @127.0.0.1 "${d}" 2>/dev/null \
-         | grep -E '^[0-9.]+$' | head -1)"
-    case "${r}" in
-        ""|0.0.0.0)  ko "${d} ne resout plus — service casse" ;;
-        216.239.38.*) ko "${d} redirige vers le SafeSearch — service casse" ;;
-        *)           ok "${d} -> ${r} (intact)" ;;
-    esac
+    verifier_service_legitime "${d}"
 done
 
 titre "5. Chaque entree est structurellement capable de forcer quelque chose"

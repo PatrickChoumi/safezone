@@ -51,27 +51,55 @@ verifier_echec() {
 # forme, c'est donc 0.0.0.0 que l'on rencontre en pratique. Les deux comptent
 # comme un blocage : dans les deux cas le navigateur ne joint rien.
 #
-# Renvoie 0 si bloque, 1 sinon. Affiche l'adresse obtenue sur la sortie.
+# Une reponse vide, en revanche, ne prouve rien par elle-meme : elle peut venir
+# d'un vrai NXDOMAIN comme d'un resolveur qui n'a pas repondu du tout. Les
+# confondre ferait afficher « bloque » pour un domaine qu'on n'a en realite pas
+# su interroger — un faux vert, exactement ce qu'un outil de ce genre ne doit
+# jamais produire. On va donc lire le code de statut de la reponse pour trancher.
+#
+# Renvoie 0 si bloque, 1 s'il resout, 2 si l'on ne peut pas conclure.
+# Affiche l'adresse obtenue (ou le motif) sur la sortie.
 dns_bloque() {
-    local domaine="$1" serveur="${2:-127.0.0.1}" reponse
+    local domaine="$1" serveur="${2:-127.0.0.1}" reponse statut
+    # « dig +short » ecrit ses diagnostics (« ;; communications error... »,
+    # « ;; no servers could be reached ») sur la sortie STANDARD, pas sur la
+    # sortie d'erreur. Sans ce filtre ils etaient pris pour une reponse, et un
+    # resolveur injoignable etait rapporte comme « resout vers ;; communications
+    # error » — un diagnostic faux dans les deux sens a la fois.
     reponse="$(dig +short +time=3 +tries=1 "@${serveur}" "${domaine}" 2>/dev/null \
-               | grep -vE '^$' | head -3 | tr '\n' ' ' | sed 's/ $//')"
-    printf '%s' "${reponse}"
-    case "${reponse}" in
-        ""|"0.0.0.0"|"::"|"0.0.0.0 ::"|"127.0.0.1") return 0 ;;
-        *) return 1 ;;
+               | grep -vE '^;|^$' | head -3 | tr '\n' ' ' | sed 's/ $//')"
+
+    if [ -n "${reponse}" ]; then
+        printf '%s' "${reponse}"
+        case "${reponse}" in
+            "0.0.0.0"|"::"|"0.0.0.0 ::"|"127.0.0.1") return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    statut="$(dig +time=3 +tries=1 "@${serveur}" "${domaine}" 2>/dev/null \
+              | sed -n 's/.*status: \([A-Z]*\).*/\1/p' | head -1)"
+    case "${statut}" in
+        NXDOMAIN) printf 'NXDOMAIN';                return 0 ;;
+        "")       printf 'aucune reponse';          return 2 ;;
+        *)        printf '%s sans adresse' "${statut}"; return 2 ;;
     esac
 }
 
 # verifier_bloque "domaine" — controle de blocage lisible dans les tests.
+#
+# Le cas indetermine est signale sans etre compte comme un echec, et renvoie 0
+# pour que les appelants n'enchainent pas sur un diagnostic (« la liste est-elle
+# chargee ? ») qui n'a rien a voir avec la cause reelle.
 verifier_bloque() {
     local domaine="$1" reponse rc
     reponse="$(dns_bloque "${domaine}")"; rc=$?
-    if [ "${rc}" -eq 0 ]; then
-        ok "${domaine} bloque (${reponse:-NXDOMAIN})"
-    else
-        ko "${domaine} resout vers ${reponse} — non bloque"
-    fi
+    case "${rc}" in
+        0) ok "${domaine} bloque (${reponse})" ;;
+        2) warn "${domaine} : ${reponse} — ni blocage ni resolution constates"
+           return 0 ;;
+        *) ko "${domaine} resout vers ${reponse} — non bloque" ;;
+    esac
     return "${rc}"
 }
 

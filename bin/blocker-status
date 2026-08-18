@@ -69,13 +69,23 @@ service_tourne() {
 # ---------------------------------------------------------------------------
 # Sondes DNS reelles
 # ---------------------------------------------------------------------------
+# Trois issues possibles, et non deux. « Pas de reponse » etait auparavant
+# compte comme « bloque » : sur la liste des services legitimes, un amont qui
+# tardait de deux secondes faisait donc annoncer « BLOQUE A TORT » pour un
+# service parfaitement joignable. Une sonde qui crie au loup a tort est pire
+# qu'une sonde absente — c'est elle qui sert a decider si l'outil marche.
+#   0 = bloque   1 = resout normalement   2 = dig absent   3 = pas de reponse
 sonde_bloque() {
     command -v dig >/dev/null 2>&1 || return 2
-    local r
-    r="$(dig +short +time=2 +tries=1 "@${BLOCKER_LISTEN_ADDR}" "$1" 2>/dev/null | head -1)"
+    local r="" essai
+    for essai in 1 2; do
+        r="$(dig +short +time=3 +tries=1 "@${BLOCKER_LISTEN_ADDR}" "$1" 2>/dev/null | head -1)"
+        [ -n "${r}" ] && break
+    done
     case "${r}" in
-        ""|0.0.0.0|::|127.0.0.1) return 0 ;;
-        *) return 1 ;;
+        "")                   return 3 ;;
+        0.0.0.0|::|127.0.0.1) return 0 ;;
+        *)                    return 1 ;;
     esac
 }
 
@@ -101,7 +111,12 @@ if [ "${MODE}" = "sonde" ]; then
 
     printf '\n  %sDomaines de contournement (doivent etre bloques)%s\n' "${GRAS}" "${Z}"
     for d in dns.google cloudflare-dns.com nordvpn.com torproject.org; do
-        if sonde_bloque "${d}"; then ok "${d}" "bloque"; else ko "${d}" "RESOUT"; fi
+        sonde_bloque "${d}"
+        case "$?" in
+            0) ok    "${d}" "bloque" ;;
+            3) moyen "${d}" "sans reponse (amont lent ou injoignable)" ;;
+            *) ko    "${d}" "RESOUT" ;;
+        esac
     done
 
     printf '\n  %sSafeSearch (doivent pointer vers la variante stricte)%s\n' "${GRAS}" "${Z}"
@@ -111,7 +126,12 @@ if [ "${MODE}" = "sonde" ]; then
 
     printf '\n  %sServices legitimes (ne doivent PAS etre casses)%s\n' "${GRAS}" "${Z}"
     for d in mail.google.com wikipedia.org github.com; do
-        if sonde_bloque "${d}"; then ko "${d}" "BLOQUE A TORT"; else ok "${d}" "accessible"; fi
+        sonde_bloque "${d}"
+        case "$?" in
+            0) ko    "${d}" "BLOQUE A TORT" ;;
+            3) moyen "${d}" "sans reponse (amont lent ou injoignable)" ;;
+            *) ok    "${d}" "accessible" ;;
+        esac
     done
 
     printf '\n'
@@ -129,12 +149,18 @@ fi
 
 # --- 1. Resolveur -----------------------------------------------------------
 if service_tourne blocker-resolver.service dnsmasq; then
-    if sonde_bloque dns.google; then
-        ok "1. Resolveur DNS local" "actif, filtre"
-    else
-        moyen "1. Resolveur DNS local" "actif mais ne filtre pas"
-        trou "Le resolveur tourne mais ne bloque pas : listes vides ou non chargees."
-    fi
+    sonde_bloque dns.google
+    case "$?" in
+        0) ok "1. Resolveur DNS local" "actif, filtre" ;;
+        3)
+            moyen "1. Resolveur DNS local" "actif, sonde sans reponse"
+            trou "Le resolveur tourne mais n'a pas repondu a la sonde : ni confirme ni infirme."
+            ;;
+        *)
+            moyen "1. Resolveur DNS local" "actif mais ne filtre pas"
+            trou "Le resolveur tourne mais ne bloque pas : listes vides ou non chargees."
+            ;;
+    esac
     nb=$(cat "${BLOCKER_STATEDIR}"/blocklists/*.conf 2>/dev/null | grep -c '^address=/' || true)
     detail "${nb} domaines dans les listes"
     recent="$(find "${BLOCKER_STATEDIR}/blocklists" -name '[1-9][0-9]-*.conf' -mtime -8 2>/dev/null | head -1)"
