@@ -1,0 +1,511 @@
+#!/bin/bash
+# blocker-adulte — volet Android
+#
+# Ce programme tourne sur le PC et pilote le telephone par adb. Il n'installe
+# RIEN sur le telephone : il change des reglages qu'Android expose deja, et il
+# sait tous les remettre comme avant.
+#
+# CE QU'IL FAIT
+#
+#   Il force le « DNS prive » d'Android (DNS-over-TLS, Android 9 et plus) vers
+#   un resolveur filtrant. Ce reglage vaut pour TOUT le telephone : Wi-Fi ET
+#   donnees mobiles, toutes les applications, y compris celles qui ignorent les
+#   VPN. Le resolveur retenu par defaut bloque le contenu adulte et force le
+#   SafeSearch cote serveur — c'est-a-dire les deux composants les plus utiles
+#   du volet Linux, obtenus sans rien installer.
+#
+# CE QU'IL NE FAIT PAS, ET POURQUOI C'EST DIT ICI PLUTOT QU'EN BAS DE PAGE
+#
+#   Le retrait cote telephone tient en trois touches : Parametres > Reseau >
+#   DNS prive > Desactive. Il n'y a AUCUN moyen d'empecher cela sans devenir
+#   « proprietaire de l'appareil » (device owner), ce qui demande une remise a
+#   zero du telephone et une application dediee — voir « --verrous ».
+#
+#   Le volet Linux resiste a une desinstallation impulsive. Celui-ci, non : il
+#   rend le contournement volontaire, pas difficile. Faire croire l'inverse
+#   serait pire que ne rien faire.
+#
+# Usage :
+#   blocker-android --etat                 ce que le telephone applique vraiment
+#   blocker-android --sonde                le verifier par de vraies resolutions
+#   blocker-android --appliquer            poser le DNS filtrant
+#   blocker-android --appliquer --hote H   avec un autre resolveur DoT
+#   blocker-android --retirer              tout remettre comme avant
+#   blocker-android --reappliquer          remet le reglage s'il a bouge (timer)
+#   blocker-android --verrous              ce qu'un device owner ajouterait
+#   blocker-android --desactiver PAQUET    desactiver une application a risque
+#   blocker-android --reactiver PAQUET     la remettre
+#   blocker-android --appareil SERIE ...   si plusieurs appareils sont branches
+
+set -uo pipefail
+
+RACINE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=android/bin/blocker-android-lib.sh
+. "${RACINE}/blocker-android-lib.sh"
+
+ETATDIR="${XDG_CONFIG_HOME:-${HOME}/.config}/blocker-adulte"
+
+ACTION=""
+HOTE="${BLOCKER_DOT_DEFAUT}"
+PAQUET=""
+SANS_QUESTION=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --etat|--status)        ACTION="etat" ;;
+        --sonde|--probe)        ACTION="sonde" ;;
+        --appliquer|--apply)    ACTION="appliquer" ;;
+        --retirer|--remove)     ACTION="retirer" ;;
+        --reappliquer|--reapply) ACTION="reappliquer" ;;
+        --verrous|--locks)      ACTION="verrous" ;;
+        --desactiver|--disable) ACTION="desactiver"; PAQUET="${2:-}"; shift ;;
+        --reactiver|--enable)   ACTION="reactiver";  PAQUET="${2:-}"; shift ;;
+        --hote|--host)          HOTE="${2:-}"; shift ;;
+        --appareil|--device)    APPAREIL="${2:-}"; shift ;;
+        --oui|--yes)            SANS_QUESTION=1 ;;
+        -h|--help)              sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) erreur "$(m "Argument inconnu" "Unknown argument") : $1"; exit 2 ;;
+    esac
+    shift
+done
+
+[ -n "${ACTION}" ] || { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Prealables communs
+# ---------------------------------------------------------------------------
+if ! adb_present; then
+    erreur "$(m "adb est introuvable." "adb was not found.")"
+    note "$(m "L'installer : sudo apt install android-tools-adb (ou android-tools sur Fedora/Arch)" \
+              "Install it: sudo apt install android-tools-adb (or android-tools on Fedora/Arch)")"
+    exit 1
+fi
+# « --reappliquer » est fait pour tourner sans personne devant l'ecran, depuis
+# un timer : l'absence de telephone n'y est pas une erreur, c'est le cas normal
+# vingt-trois heures sur vingt-quatre. Il fait donc sa propre verification,
+# silencieuse.
+if [ "${ACTION}" = "reappliquer" ]; then
+    "${ADB}" devices 2>/dev/null | sed '1d' | grep -q 'device$' || exit 0
+else
+    adb_appareil_unique || exit 1
+fi
+
+SDK="$(and_sdk)"
+SERIE="$(and_shell 'getprop ro.serialno')"
+[ -n "${SERIE}" ] || SERIE="inconnu"
+AVANT="${ETATDIR}/android-${SERIE}.avant"
+
+exiger_private_dns() {
+    if [ "${SDK}" -lt 28 ]; then
+        erreur "$(m "Android 9 (API 28) est le minimum : le DNS prive n'existe pas avant." \
+                    "Android 9 (API 28) is the minimum: Private DNS does not exist before that.")"
+        note "$(m "Cet appareil est en API" "This device is API") ${SDK}."
+        note "$(m "Sur plus ancien, il reste une application VPN de filtrage — voir le README." \
+                  "On older devices an on-device filtering VPN app remains — see the README.")"
+        exit 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Etat
+# ---------------------------------------------------------------------------
+afficher_etat() {
+    printf '%sblocker-adulte — Android%s\n' "${GRAS}" "${Z}"
+    printf '%s%s%s\n' "${GRIS}" "$(and_modele)" "${Z}"
+
+    titre "$(m "DNS prive (DNS-over-TLS)" "Private DNS (DNS-over-TLS)")"
+    local mode hote
+    mode="$(dns_mode)"; hote="$(dns_hote)"
+    case "${mode}" in
+        hostname)
+            ok "$(m "mode" "mode")" "hostname"
+            if [ -n "${hote}" ] && [ "${hote}" != "null" ]; then
+                ok "$(m "resolveur" "resolver")" "${hote}"
+            else
+                ko "$(m "resolveur" "resolver")" "$(m "aucun — le telephone n'a pas de DNS" "none — the phone has no DNS")"
+            fi
+            ;;
+        opportunistic|"")
+            ko "$(m "mode" "mode")" "$(m "automatique : aucun filtrage impose" "automatic: no filtering enforced")"
+            ;;
+        off)
+            ko "$(m "mode" "mode")" "$(m "desactive : aucun filtrage impose" "off: no filtering enforced")"
+            ;;
+        *)
+            moyen "$(m "mode" "mode")" "${mode}"
+            ;;
+    esac
+
+    local val
+    val="$(dns_valide)"
+    if [ -n "${val}" ]; then
+        detail "$(m "vu par le systeme :" "as the system sees it:")"
+        printf '%s\n' "${val}" | sed "s/^ */       ${GRIS}/;s/$/${Z}/"
+    fi
+
+    titre "$(m "Applications qui peuvent contourner le DNS prive" \
+               "Apps that can bypass Private DNS")"
+    local trouve=0 pkg raison
+    while IFS='|' read -r pkg raison; do
+        [ -n "${pkg}" ] || continue
+        if paquet_installe "${pkg}"; then
+            moyen "${pkg}" "${raison}"
+            trouve=$((trouve + 1))
+        fi
+    done < <(paquets_a_risque)
+    if [ "${trouve}" -eq 0 ]; then
+        ok "$(m "aucune des applications connues n'est installee" "none of the known apps is installed")"
+    else
+        detail "$(m "les desactiver : blocker-android --desactiver <paquet>" \
+                   "disable them: blocker-android --disable <package>")"
+    fi
+
+    titre "$(m "Proprietaire de l'appareil (device owner)" "Device owner")"
+    # Chercher les mots « device owner » ne suffit pas : Android les ecrit aussi
+    # pour dire qu'il n'y en a pas. Un proprietaire reellement en place est
+    # toujours accompagne du composant qui l'incarne — c'est cela qu'on cherche.
+    local do_bloc do_actif
+    do_bloc="$(and_shell 'dumpsys device_policy' \
+               | sed -n '/[Dd]evice [Oo]wner/,/^[[:space:]]*$/p' | head -8)"
+    do_actif="$(printf '%s\n' "${do_bloc}" | grep -E 'ComponentInfo|admin=|packageName' | head -1)"
+    if [ -n "${do_actif}" ]; then
+        ok "$(m "un device owner est en place" "a device owner is set")"
+        detail "${do_actif}"
+    else
+        moyen "$(m "aucun" "none")" "$(m "le reglage reste modifiable depuis le telephone" \
+                                         "the setting stays changeable from the phone")"
+        detail "$(m "ce que cela changerait : blocker-android --verrous" \
+                   "what that would change: blocker-android --locks")"
+    fi
+
+    titre "$(m "Ce qui ne protege pas" "What does not protect you")"
+    note "$(m "- trois touches sur le telephone suffisent a tout desactiver" \
+              "- three taps on the phone are enough to switch everything off")"
+    note "$(m "- une application avec VPN integre (Opera, Tor) sort par son propre tunnel" \
+              "- an app with a built-in VPN (Opera, Tor) leaves through its own tunnel")"
+    note "$(m "- « DNS securise » dans Chrome ou Firefox contourne le DNS prive" \
+              "- « Secure DNS » in Chrome or Firefox bypasses Private DNS")"
+    note "$(m "- l'acces direct par adresse IP echappe a tout filtrage DNS" \
+              "- direct access by IP address escapes any DNS filtering")"
+    note "$(m "- le contenu adulte a l'interieur de Reddit, X ou Tumblr n'est pas filtre" \
+              "- adult content inside Reddit, X or Tumblr is not filtered")"
+    printf '\n'
+}
+
+# ---------------------------------------------------------------------------
+# Sonde
+# ---------------------------------------------------------------------------
+sonder() {
+    titre "$(m "Sondes en direct, executees sur le telephone" "Live probes, run on the phone")"
+
+    printf '\n  %s%s%s\n' "${GRAS}" \
+        "$(m "Doivent etre bloques" "Must be blocked")" "${Z}"
+    local d
+    for d in pornhub.com xvideos.com; do
+        sonde_bloque "${d}"
+        case "$?" in
+            0) ok "${d}" "$(m "bloque" "blocked")" ;;
+            3) moyen "${d}" "$(m "sans reponse (reseau ?)" "no answer (network?)")" ;;
+            *) ko "${d}" "$(m "RESOUT" "RESOLVES") ($(sonde_ip "${d}"))" ;;
+        esac
+    done
+
+    printf '\n  %s%s%s\n' "${GRAS}" \
+        "$(m "SafeSearch (le resolveur doit reecrire l'adresse)" \
+             "SafeSearch (the resolver must rewrite the address)")" "${Z}"
+    # forcesafesearch.google.com vit dans 216.239.38.0/24 : c'est la signature
+    # d'un SafeSearch impose au niveau du reseau. On ne compare pas a une
+    # adresse ecrite en dur, qui vieillirait.
+    local ip
+    ip="$(sonde_ip www.google.com)"
+    case "${ip}" in
+        216.239.3[0-9].*) ok "www.google.com" "${ip} $(m "(strict)" "(strict)")" ;;
+        "")               moyen "www.google.com" "$(m "sans reponse" "no answer")" ;;
+        *)                ko "www.google.com" "${ip} — $(m "SafeSearch non force" "SafeSearch not enforced")" ;;
+    esac
+
+    printf '\n  %s%s%s\n' "${GRAS}" \
+        "$(m "Ne doivent PAS etre casses" "Must NOT be broken")" "${Z}"
+    for d in wikipedia.org mail.google.com; do
+        sonde_bloque "${d}"
+        case "$?" in
+            0) ko "${d}" "$(m "BLOQUE A TORT" "WRONGLY BLOCKED")" ;;
+            3) moyen "${d}" "$(m "sans reponse (reseau ?)" "no answer (network?)")" ;;
+            *) ok "${d}" "$(m "accessible" "reachable") ($(sonde_ip "${d}"))" ;;
+        esac
+    done
+    printf '\n'
+}
+
+# ---------------------------------------------------------------------------
+# Application du DNS filtrant
+# ---------------------------------------------------------------------------
+# Le risque de cette operation n'est pas theorique : un nom d'hote DoT errone,
+# ou un resolveur injoignable, laisse le telephone SANS AUCUN DNS — plus rien
+# ne fonctionne, et l'utilisateur ne fait pas forcement le lien. Toute la
+# prudence du script est la : on sauvegarde, on applique, on verifie
+# reellement, et on revient en arriere tout seul si ca ne marche pas.
+attendre_validation() {
+    local essai ip
+    for essai in 1 2 3 4 5 6 7 8 9 10; do
+        ip="$(sonde_ip wikipedia.org)"
+        [ -n "${ip}" ] && return 0
+        sleep 2
+    done
+    return 1
+}
+
+appliquer() {
+    exiger_private_dns
+
+    local mode_avant hote_avant
+    mode_avant="$(dns_mode)"; hote_avant="$(dns_hote)"
+    [ "${mode_avant}" = "null" ] && mode_avant="opportunistic"
+
+    titre "$(m "Ce qui va changer sur le telephone" "What will change on the phone")"
+    note "$(m "appareil" "device")     : $(and_modele)"
+    note "$(m "avant" "before")        : private_dns_mode=${mode_avant} ${hote_avant}"
+    note "$(m "apres" "after")         : private_dns_mode=hostname ${HOTE}"
+    printf '\n'
+    note "$(m "Rien n'est installe sur le telephone. Ce reglage existe dans" \
+              "Nothing is installed on the phone. This setting already exists under")"
+    note "$(m "Parametres > Reseau et Internet > DNS prive, et c'est celui-la qu'on ecrit." \
+              "Settings > Network & Internet > Private DNS, and that is the one we write.")"
+    printf '\n'
+
+    if [ "${SANS_QUESTION}" -eq 0 ]; then
+        printf '%s [%s] ' "$(m "Appliquer ?" "Apply?")" "$(m "o/N" "y/N")"
+        local rep=""
+        read -r rep </dev/tty || rep=""
+        case "${rep}" in
+            o|O|oui|y|Y|yes) ;;
+            *) note "$(m "Annule. Rien n'a ete modifie." "Cancelled. Nothing was changed.")"; exit 0 ;;
+        esac
+    fi
+
+    mkdir -p "${ETATDIR}"
+    printf 'mode=%s\nhote=%s\ndate=%s\n' "${mode_avant}" "${hote_avant}" "$(date -Is)" > "${AVANT}"
+    note "$(m "etat precedent note dans" "previous state saved in") ${AVANT}"
+
+    and_setting_put private_dns_specifier "${HOTE}"
+    and_setting_put private_dns_mode hostname
+
+    note "$(m "verification de la resolution sur le telephone (jusqu'a 20 s)..." \
+              "checking name resolution on the phone (up to 20 s)...")"
+
+    if attendre_validation; then
+        ok "$(m "DNS prive actif" "Private DNS active")" "${HOTE}"
+        sonder
+        titre "$(m "A retenir" "Worth remembering")"
+        note "$(m "Le retrait cote telephone tient en trois touches. Ce n'est pas un" \
+                  "Removal from the phone takes three taps. This is not an oversight:")"
+        note "$(m "oubli : Android ne permet pas de l'empecher sans device owner." \
+                  "Android offers no way to prevent it without a device owner.")"
+        note "$(m "Voir : blocker-android --verrous" "See: blocker-android --locks")"
+        return 0
+    fi
+
+    # Echec : on ne laisse pas le telephone sans DNS.
+    ko "$(m "aucune resolution apres 20 s" "no name resolution after 20 s")" "${HOTE}"
+    note "$(m "Retour a l'etat precedent pour ne pas laisser le telephone sans DNS." \
+              "Reverting so the phone is not left without DNS.")"
+    and_setting_put private_dns_mode "${mode_avant}"
+    if [ -n "${hote_avant}" ] && [ "${hote_avant}" != "null" ]; then
+        and_setting_put private_dns_specifier "${hote_avant}"
+    fi
+
+    if attendre_validation; then
+        ok "$(m "etat precedent retabli, le telephone resout de nouveau" \
+               "previous state restored, the phone resolves again")"
+    else
+        ko "$(m "le telephone ne resout toujours pas" "the phone still does not resolve")"
+        note "$(m "Couper puis rallumer le Wi-Fi, ou le mode avion, force Android a" \
+                  "Toggling Wi-Fi, or flight mode, forces Android to rebuild its")"
+        note "$(m "reconstruire sa configuration reseau." "network configuration.")"
+    fi
+
+    note ""
+    note "$(m "Causes les plus frequentes :" "Most common causes:")"
+    note "$(m "  - nom d'hote DoT errone (« --hote » attend un NOM, jamais une IP)" \
+              "  - wrong DoT hostname (« --host » expects a NAME, never an IP)")"
+    note "$(m "  - le reseau bloque le port 853 (DoT), frequent sur un Wi-Fi public" \
+              "  - the network blocks port 853 (DoT), common on public Wi-Fi")"
+    note "$(m "  - le telephone n'a tout simplement pas de connexion" \
+              "  - the phone simply has no connection")"
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# Retrait
+# ---------------------------------------------------------------------------
+# Pas de retrait en quatre phases ici, contrairement au volet Linux. Ce serait
+# du theatre : trois touches sur le telephone font la meme chose, et ajouter de
+# la friction la ou la plateforme n'en offre aucune reviendrait a mentir sur ce
+# que l'outil protege.
+retirer() {
+    local mode_avant="opportunistic" hote_avant=""
+    if [ -r "${AVANT}" ]; then
+        mode_avant="$(sed -n 's/^mode=//p' "${AVANT}" | head -1)"
+        hote_avant="$(sed -n 's/^hote=//p' "${AVANT}" | head -1)"
+        [ -n "${mode_avant}" ] || mode_avant="opportunistic"
+        note "$(m "etat retrouve dans" "state found in") ${AVANT}"
+    else
+        note "$(m "aucun etat precedent connu : retour au mode automatique d'Android." \
+                  "no previous state on record: back to Android's automatic mode.")"
+    fi
+
+    and_setting_put private_dns_mode "${mode_avant}"
+    if [ -n "${hote_avant}" ] && [ "${hote_avant}" != "null" ]; then
+        and_setting_put private_dns_specifier "${hote_avant}"
+    fi
+
+    if attendre_validation; then
+        ok "$(m "DNS prive remis a" "Private DNS restored to")" "${mode_avant}"
+    else
+        moyen "$(m "DNS prive remis a" "Private DNS restored to")" \
+              "${mode_avant} — $(m "mais la resolution ne repond pas encore" "but resolution is not answering yet")"
+    fi
+    rm -f "${AVANT}"
+    note "$(m "Les applications desactivees par --desactiver ne sont PAS reactivees ici :" \
+              "Apps disabled with --disable are NOT re-enabled here:")"
+    note "$(m "elles se remettent une par une, avec --reactiver <paquet>." \
+              "put them back one at a time, with --enable <package>.")"
+}
+
+# ---------------------------------------------------------------------------
+# Reapplication automatique, quand le telephone est branche
+# ---------------------------------------------------------------------------
+# C'est l'equivalent, tres reduit, du self-heal du volet Linux — et sa limite
+# doit etre dite : il ne protege QUE pendant que le telephone est branche au
+# PC. Un telephone qu'on ne branche jamais n'est jamais reparé. Beaucoup de
+# gens le branchent la nuit pour le recharger ; pour ceux-la, un reglage
+# desactive dans la journee est remis le soir meme. Pour les autres, cette
+# partie ne sert a rien, et mieux vaut le savoir.
+#
+# Silencieux quand tout va bien : un timer qui ecrit dans le journal toutes les
+# quinze minutes rend le journal inutilisable.
+reappliquer() {
+    [ "${SDK}" -ge 28 ] || exit 0
+
+    local mode hote
+    mode="$(dns_mode)"; hote="$(dns_hote)"
+    if [ "${mode}" = "hostname" ] && [ "${hote}" = "${HOTE}" ]; then
+        exit 0
+    fi
+
+    # On ne reapplique que ce que l'utilisateur avait deja demande une fois :
+    # sans trace d'une application precedente, ce timer n'a rien a imposer.
+    if [ ! -r "${AVANT}" ]; then
+        exit 0
+    fi
+
+    printf '%s : %s=%s %s -> hostname %s\n' \
+        "$(m "reapplication" "reapplying")" "private_dns_mode" "${mode}" "${hote}" "${HOTE}"
+
+    and_setting_put private_dns_specifier "${HOTE}"
+    and_setting_put private_dns_mode hostname
+
+    if attendre_validation; then
+        printf '%s\n' "$(m "DNS prive remis en place" "Private DNS restored")"
+        exit 0
+    fi
+
+    printf '%s\n' "$(m "la reapplication n a pas valide, retour a l etat precedent" \
+                        "reapplication did not validate, reverting")"
+    and_setting_put private_dns_mode "${mode}"
+    [ -n "${hote}" ] && [ "${hote}" != "null" ] && and_setting_put private_dns_specifier "${hote}"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Verrous (device owner)
+# ---------------------------------------------------------------------------
+verrous() {
+    titre "$(m "Ce que « proprietaire de l'appareil » (device owner) ajouterait" \
+               "What « device owner » would add")"
+    note "$(m "Android reserve le verrouillage reel a une application declaree" \
+              "Android reserves real locking to an app declared as the device's")"
+    note "$(m "proprietaire de l'appareil. Une fois en place, elle peut :" \
+              "owner. Once in place, such an app can:")"
+    printf '\n'
+    note "$(m "  - imposer le DNS prive sans que l'utilisateur puisse le changer" \
+              "  - enforce Private DNS with no way for the user to change it")"
+    note "     setGlobalPrivateDnsModeSpecifiedHost()"
+    note "$(m "  - imposer un VPN toujours actif, avec blocage hors tunnel" \
+              "  - enforce an always-on VPN, with lockdown outside the tunnel")"
+    note "     setAlwaysOnVpnPackage(pkg, lockdownEnabled = true)"
+    note "$(m "  - interdire la configuration de VPN, le mode sans echec, le debogage" \
+              "  - forbid VPN configuration, safe mode, debugging")"
+    note "     DISALLOW_CONFIG_VPN, DISALLOW_SAFE_BOOT, DISALLOW_DEBUGGING_FEATURES"
+    note "$(m "  - empecher sa propre desinstallation" "  - block its own uninstallation")"
+    note "     setUninstallBlocked()"
+    printf '\n'
+    titre "$(m "Ce que cela coute" "What it costs")"
+    note "$(m "  - le telephone doit etre remis a zero, ou du moins n'avoir AUCUN compte" \
+              "  - the phone must be factory reset, or at least have NO account")"
+    note "$(m "    enregistre : « dpm set-device-owner » echoue sinon" \
+              "    registered: « dpm set-device-owner » fails otherwise")"
+    note "$(m "  - il faut une application qui embarque un DeviceAdminReceiver" \
+              "  - it needs an app embedding a DeviceAdminReceiver")"
+    note "$(m "  - le retrait passe par une remise a zero du telephone" \
+              "  - removal goes through a factory reset of the phone")"
+    printf '\n'
+    note "$(m "La commande, une fois une telle application installee :" \
+              "The command, once such an app is installed:")"
+    note "     adb shell dpm set-device-owner <paquet>/<recepteur>"
+    printf '\n'
+    note "$(m "Cette application n'est pas fournie par ce depot : elle demande un APK" \
+              "This app is not shipped by this repository: it needs an APK, which")"
+    note "$(m "que je ne peux ni construire ni eprouver ici. Voir android/README.md," \
+              "I can neither build nor test here. See android/README.md, section")"
+    note "$(m "section « Phase 2 », pour ce qu'elle devrait contenir." \
+              "« Phase 2 », for what it should contain.")"
+    printf '\n'
+}
+
+# ---------------------------------------------------------------------------
+# Applications a risque
+# ---------------------------------------------------------------------------
+basculer_paquet() {
+    local action="$1" pkg="$2"
+    if [ -z "${pkg}" ]; then
+        erreur "$(m "Indiquer un nom de paquet." "Give a package name.")"
+        note "$(m "Les paquets a risque connus et installes sont listes par --etat." \
+                  "Known risky packages that are installed are listed by --status.")"
+        exit 2
+    fi
+    if ! paquet_installe "${pkg}"; then
+        erreur "$(m "Paquet non installe sur cet appareil" "Package not installed on this device") : ${pkg}"
+        exit 1
+    fi
+
+    local sortie
+    if [ "${action}" = "desactiver" ]; then
+        sortie="$(and_shell "pm disable-user --user 0 ${pkg}")"
+    else
+        sortie="$(and_shell "pm enable --user 0 ${pkg}")"
+    fi
+
+    if printf '%s' "${sortie}" | grep -qi 'new state'; then
+        ok "${pkg}" "${sortie}"
+        [ "${action}" = "desactiver" ] && \
+            detail "$(m "l'application reste installee et se remet par --reactiver" \
+                       "the app stays installed and comes back with --enable")"
+    else
+        ko "${pkg}" "${sortie:-$(m "aucune reponse de pm" "no answer from pm")}"
+        detail "$(m "certaines applications systeme refusent d'etre desactivees" \
+                   "some system apps refuse to be disabled")"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+case "${ACTION}" in
+    etat)       afficher_etat ;;
+    reappliquer) reappliquer ;;
+    sonde)      sonder ;;
+    appliquer)  appliquer ;;
+    retirer)    retirer ;;
+    verrous)    verrous ;;
+    desactiver) basculer_paquet desactiver "${PAQUET}" ;;
+    reactiver)  basculer_paquet reactiver  "${PAQUET}" ;;
+esac

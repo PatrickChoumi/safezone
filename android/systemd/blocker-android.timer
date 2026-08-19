@@ -1,0 +1,16 @@
+[Unit]
+Description=blocker-adulte — verification periodique du telephone branche
+Documentation=file:%h/safezone/android/README.md
+
+[Timer]
+# Quinze minutes : assez pour rattraper la meme soiree un reglage desactive,
+# assez peu pour ne pas reveiller adb en permanence. Le service etant
+# silencieux quand tout va bien, une frequence plus haute n'apporterait que du
+# bruit dans le journal.
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -30,6 +30,7 @@ blocker-status --sonde      # le vérifier par de vraies requêtes DNS
 
 ## Sommaire
 
+- [Et sur téléphone ?](#et-sur-téléphone-)
 - [Langue : français et anglais](#langue--français-et-anglais)
 - [Distributions supportées](#distributions-supportées)
 - [Philosophie et ligne rouge](#philosophie-et-ligne-rouge)
@@ -42,6 +43,29 @@ blocker-status --sonde      # le vérifier par de vraies requêtes DNS
 - [Observer l'outil au travail](#observer-loutil-au-travail)
 - [Limites connues](#limites-connues)
 - [Dépannage](#dépannage)
+
+---
+
+## Et sur téléphone ?
+
+Un volet Android existe, dans [`android/`](android/README.md). **Il est
+beaucoup plus faible que celui-ci, et c'est écrit noir sur blanc dans son
+README** : sur Android sans root, le retrait tient en trois touches, là où le
+volet Linux demande huit commandes et un jeton tiré au hasard à chaque étape.
+
+Ce qu'il apporte quand même : le **DNS privé** d'Android (DNS-over-TLS) pointé
+vers un résolveur filtrant, ce qui couvre tout le téléphone — Wi-Fi et données
+mobiles, toutes les applications — avec le contenu adulte bloqué et le
+SafeSearch forcé côté serveur. Rien n'est installé sur l'appareil : tout passe
+par `adb` depuis ce PC.
+
+```bash
+./android/bin/blocker-android --etat
+./android/bin/blocker-android --appliquer
+```
+
+Le volet Android n'est pas installé par `make install` : ce n'est pas un
+neuvième composant, c'est un outil qui pilote une autre machine.
 
 ---
 

@@ -1,0 +1,143 @@
+#!/bin/bash
+# blocker-adulte — telephone Android simule, pour tests/test_android.sh
+#
+# Ce script se fait passer pour adb. Il n'existe que pour eprouver la logique de
+# blocker-android sans appareil : les chemins dangereux — celui ou le resolveur
+# ne repond pas et ou il faut revenir en arriere tout seul — sont precisement
+# ceux qu'on ne peut pas provoquer a volonte sur un vrai telephone.
+#
+# Pilote par des variables d'environnement :
+#   FAUX_ETAT      fichier ou sont gardes les « settings » du telephone simule
+#   FAUX_SDK       niveau d'API annonce (defaut 34)
+#   FAUX_APPAREILS ce que « adb devices » repond (defaut : un seul, autorise)
+#   FAUX_HOTES_OK  hotes DoT qui « fonctionnent » (defaut : family.adguard-dns.com)
+#   FAUX_PAQUETS   paquets installes, separes par des espaces
+
+set -u
+
+ETAT="${FAUX_ETAT:-/tmp/faux-adb-etat}"
+SDK="${FAUX_SDK:-34}"
+HOTES_OK="${FAUX_HOTES_OK:-family.adguard-dns.com}"
+PAQUETS="${FAUX_PAQUETS:-com.android.chrome org.mozilla.firefox}"
+
+[ -e "${ETAT}" ] || printf 'private_dns_mode=opportunistic\nprivate_dns_specifier=null\n' > "${ETAT}"
+
+lire()  { sed -n "s/^$1=//p" "${ETAT}" | head -1; }
+ecrire() {
+    local cle="$1" val="$2" tmp
+    tmp="$(mktemp)"
+    grep -v "^${cle}=" "${ETAT}" > "${tmp}" 2>/dev/null || true
+    printf '%s=%s\n' "${cle}" "${val}" >> "${tmp}"
+    mv "${tmp}" "${ETAT}"
+}
+
+# Le telephone resout-il, dans son etat courant ?
+# C'est le coeur de la simulation : un DNS prive pointant vers un hote inconnu
+# laisse le telephone sans resolution du tout, exactement comme en vrai.
+filtre=0
+resout=1
+case "$(lire private_dns_mode)" in
+    hostname)
+        h="$(lire private_dns_specifier)"
+        if printf '%s' " ${HOTES_OK} " | grep -q " ${h} "; then
+            filtre=1
+        else
+            resout=0
+        fi
+        ;;
+esac
+
+resoudre() {
+    [ "${resout}" -eq 1 ] || return 1
+    case "$1" in
+        pornhub.com|xvideos.com)
+            [ "${filtre}" -eq 1 ] && printf '0.0.0.0\n' || printf '66.254.114.41\n' ;;
+        www.google.com)
+            [ "${filtre}" -eq 1 ] && printf '216.239.38.120\n' || printf '142.250.75.228\n' ;;
+        wikipedia.org)   printf '91.198.174.192\n' ;;
+        mail.google.com) printf '142.250.201.5\n' ;;
+        *)               printf '93.184.216.34\n' ;;
+    esac
+}
+
+# --- adb devices -------------------------------------------------------------
+if [ "${1:-}" = "devices" ]; then
+    printf 'List of devices attached\n'
+    printf '%s\n' "${FAUX_APPAREILS-FAUXSERIE01	device}"
+    exit 0
+fi
+
+# --- adb [-s SERIE] shell "…" ------------------------------------------------
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -s) shift ;;
+        shell) shift; break ;;
+        devices) printf 'List of devices attached\n%s\n' "${FAUX_APPAREILS-FAUXSERIE01	device}"; exit 0 ;;
+        *) ;;
+    esac
+    shift
+done
+
+CMD="$*"
+
+case "${CMD}" in
+    "getprop ro.build.version.sdk")   printf '%s\n' "${SDK}" ;;
+    "getprop ro.build.version.release") printf '14\n' ;;
+    "getprop ro.product.manufacturer")  printf 'FauxConstructeur\n' ;;
+    "getprop ro.product.model")         printf 'FauxModele\n' ;;
+    "getprop ro.serialno")              printf 'FAUXSERIE01\n' ;;
+
+    "settings get global "*)
+        cle="${CMD#settings get global }"
+        v="$(lire "${cle}")"
+        printf '%s\n' "${v:-null}" ;;
+
+    "settings put global "*)
+        reste="${CMD#settings put global }"
+        cle="${reste%% *}"
+        val="${reste#* }"
+        val="${val#\'}"; val="${val%\'}"
+        ecrire "${cle}" "${val}" ;;
+
+    "ping "*)
+        hote="${CMD##* }"
+        if ip="$(resoudre "${hote}")"; then
+            printf 'PING %s (%s) 56(84) bytes of data.\n' "${hote}" "${ip}"
+            [ "${ip}" = "0.0.0.0" ] || printf '64 bytes from %s: icmp_seq=1 ttl=55 time=12.3 ms\n' "${ip}"
+        else
+            printf 'ping: unknown host %s\n' "${hote}" >&2
+            exit 1
+        fi ;;
+
+    "pm list packages "*)
+        motif="${CMD#pm list packages }"
+        for p in ${PAQUETS}; do
+            case "${p}" in *"${motif}"*) printf 'package:%s\n' "${p}" ;; esac
+        done ;;
+
+    "pm disable-user --user 0 "*)
+        printf 'Package %s new state: disabled-user\n' "${CMD##* }" ;;
+    "pm enable --user 0 "*)
+        printf 'Package %s new state: enabled\n' "${CMD##* }" ;;
+
+    "dumpsys connectivity")
+        if [ "$(lire private_dns_mode)" = "hostname" ]; then
+            printf '    Private DNS: mode=hostname host=%s\n' "$(lire private_dns_specifier)"
+            [ "${resout}" -eq 1 ] && printf '    Validated private DNS servers: [/1.2.3.4]\n'
+        else
+            printf '    Private DNS: mode=opportunistic\n'
+        fi ;;
+
+    "dumpsys device_policy")
+        # Android ecrit « Device Owner » dans les deux cas : la difference est la
+        # presence du composant. La simulation reproduit les deux formes, sinon
+        # le test ne verifierait rien.
+        if [ -n "${FAUX_DEVICE_OWNER:-}" ]; then
+            printf 'Device Owner:\n  admin=ComponentInfo{%s}\n\n' "${FAUX_DEVICE_OWNER}"
+        else
+            printf 'Device Owner:\n  (none)\n\n'
+        fi ;;
+
+    *) exit 0 ;;
+esac
+exit 0

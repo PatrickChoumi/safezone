@@ -28,6 +28,7 @@ blocker-status --probe      # prove it with real DNS queries (--sonde also works
 
 ## Contents
 
+- [What about phones?](#what-about-phones)
 - [Language](#language)
 - [Supported distributions](#supported-distributions)
 - [Philosophy and red lines](#philosophy-and-red-lines)
@@ -38,6 +39,28 @@ blocker-status --probe      # prove it with real DNS queries (--sonde also works
 - [Checking that it works](#checking-that-it-works)
 - [Known limits](#known-limits)
 - [Troubleshooting](#troubleshooting)
+
+---
+
+## What about phones?
+
+An Android side exists, in [`android/`](android/README.en.md). **It is far
+weaker than this one, and its README says so plainly**: on Android without
+root, removal takes three taps, where the Linux side asks for eight commands
+and a randomly drawn token at every step.
+
+What it does bring: Android's **Private DNS** (DNS-over-TLS) pointed at a
+filtering resolver, which covers the whole phone — Wi-Fi and mobile data, every
+app — with adult content blocked and SafeSearch enforced server-side. Nothing is
+installed on the device: everything goes through `adb` from this PC.
+
+```bash
+./android/bin/blocker-android --status
+./android/bin/blocker-android --apply
+```
+
+The Android side is not installed by `make install`: it is not a ninth
+component, it is a tool that drives another machine.
 
 ---
 

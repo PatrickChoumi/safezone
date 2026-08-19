@@ -166,7 +166,9 @@ check:
 	@erreurs=0; \
 	for f in install.sh blocker-uninstall.sh bin/* lib/*.sh tests/*.sh \
 	         etc/NetworkManager/dispatcher.d/90-blocker-adulte \
-	         initramfs-hook/* debian/postinst debian/prerm debian/postrm; do \
+	         initramfs-hook/* dracut/* mkinitcpio/* \
+	         android/bin/* android/tests/faux-adb android/tests/*.sh \
+	         debian/postinst debian/prerm debian/postrm; do \
 		[ -f "$$f" ] || continue; \
 		if head -1 "$$f" | grep -q 'bin/sh'; then sh -n "$$f" || erreurs=1; \
 		else bash -n "$$f" || erreurs=1; fi; \
@@ -175,6 +177,9 @@ check:
 		shellcheck -x -S warning -e SC2034 \
 			install.sh blocker-uninstall.sh bin/* lib/*.sh tests/*.sh \
 			etc/NetworkManager/dispatcher.d/90-blocker-adulte \
+			|| erreurs=1; \
+		shellcheck -x -S warning -e SC2034 \
+			android/bin/* android/tests/faux-adb android/tests/*.sh \
 			|| erreurs=1; \
 		shellcheck -S warning -e SC2034 -s sh \
 			initramfs-hook/* dracut/blocker-adulte-prepivot.sh \

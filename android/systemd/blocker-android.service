@@ -1,0 +1,18 @@
+[Unit]
+Description=blocker-adulte — remet le DNS filtrant sur le telephone branche
+Documentation=file:%h/safezone/android/README.md
+
+# Unite UTILISATEUR, pas systeme : adb tourne sous le compte de l'utilisateur,
+# avec ses autorisations udev et sa cle d'authentification. Lancee en root,
+# elle demarrerait un second serveur adb et ne verrait pas l'appareil.
+#
+# Elle ne fait rien si aucun telephone n'est branche, ni si le reglage est deja
+# celui attendu, ni si l'utilisateur n'a jamais lance « --appliquer » sur cet
+# appareil : elle ne remet en place que ce qui a ete demande une fois.
+
+[Service]
+Type=oneshot
+ExecStart=%h/safezone/android/bin/blocker-android --reappliquer
+# Un telephone debranche en cours de route, un cable qui bouge : ce sont des
+# incidents ordinaires, pas des pannes de service.
+SuccessExitStatus=0 1
