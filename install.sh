@@ -245,6 +245,14 @@ etat blocker-list-update.timer
 etat blocker-policies.path
 
 printf '\n'
+# La langue est deduite de la locale du systeme, qui n'est pas forcement celle
+# que l'on parle : une Ubuntu installee en anglais par quelqu'un qui lit le
+# francais est un cas courant. On le dit une fois, ici, plutot que de laisser
+# l'utilisateur se demander pourquoi l'outil ne parle pas sa langue.
+printf '%s : %s\n' "$(m "Langue des messages" "Message language")" "${BLOCKER_LANGUE}"
+printf '  %s\n' "$(m "la changer : BLOCKER_LANG=\"fr\" ou \"en\" dans /etc/blocker-adulte/blocker.conf" \
+                     "change it: BLOCKER_LANG=\"fr\" or \"en\" in /etc/blocker-adulte/blocker.conf")"
+printf '\n'
 printf '%s\n' "$(m "Verifier le blocage :" "Check the blocking:")"
 printf '  sudo %s/tests/run_all.sh\n' "${SRC}"
 printf '\n'

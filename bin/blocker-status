@@ -314,8 +314,20 @@ if [ "${path_active}" -eq 1 ] && [ "${hook_pkg}" -eq 1 ]; then
     ok "${C5}" "$(m "unite path + hook du gestionnaire" "path unit + package-manager hook")"
 elif [ "${path_active}" -eq 1 ]; then
     ok "${C5}" "$(m "unite path systemd (reaction immediate)" "systemd path unit (immediate)")"
-    detail "$(m "aucun hook de gestionnaire de paquets sur cette distribution" \
-               "no package-manager hook on this distribution")"
+    # Pourquoi le hook du gestionnaire manque : la reponse n'est pas la meme
+    # selon la distribution, et « aucun hook sur cette distribution » serait
+    # faux sur Debian, ou le hook existe mais vient avec le paquet .deb.
+    case "${BLOCKER_PKGMGR}" in
+        apt)
+            detail "$(m "installation hors paquet .deb : pas de trigger dpkg" \
+                       "installed outside the .deb: no dpkg trigger")" ;;
+        pacman)
+            detail "$(m "hook pacman absent : sudo /usr/lib/blocker-adulte/blocker-configure" \
+                       "pacman hook missing: sudo /usr/lib/blocker-adulte/blocker-configure")" ;;
+        *)
+            detail "$(m "${BLOCKER_PKGMGR} n offre pas de hook par depot de fichier ; l unite path suffit" \
+                       "${BLOCKER_PKGMGR} offers no drop-in hook; the path unit is enough")" ;;
+    esac
 elif [ "${hook_pkg}" -eq 1 ]; then
     moyen "${C5}" "$(m "hook du gestionnaire seul" "package-manager hook only")"
     detail "$(m "blocker-policies.path est desarme : sudo systemctl enable --now blocker-policies.path" \

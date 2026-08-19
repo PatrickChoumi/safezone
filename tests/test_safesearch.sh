@@ -103,7 +103,7 @@ titre "4. Les services legitimes ne sont pas casses"
 # un resolveur qui vient d'etre redemarre, donc a cache froid. On separe donc
 # les trois causes possibles au lieu d'accuser l'outil par defaut.
 verifier_service_legitime() {
-    local d="$1" r="" essai fichier amont
+    local d="$1" r="" essai fichier amont r2
 
     for essai in 1 2 3; do
         r="$(dig +short +time=5 +tries=1 @127.0.0.1 "${d}" 2>/dev/null \
@@ -139,12 +139,27 @@ verifier_service_legitime() {
                          dig +short +time=5 +tries=2 -tA "@${BLOCKER_UPSTREAM_1}" "${d}" \
                          2>/dev/null | grep -E '^[0-9.]+$' | head -1)"
             fi
-            if [ -n "${amont}" ]; then
-                ko "${d} : l amont repond (${amont}) mais le resolveur local ne renvoie rien"
-                info "la panne est bien de notre cote : journalctl -u blocker-resolver -n 30"
-            else
+            if [ -z "${amont}" ]; then
                 warn "${d} : aucune reponse, de l amont ${BLOCKER_UPSTREAM_1} non plus"
                 info "ni blocage ni redirection : amont lent ou injoignable a cet instant."
+            else
+                # L'amont a repondu : le nom existe et l'amont l'a maintenant en
+                # cache. On redemande au resolveur local. S'il repond cette
+                # fois, l'echec precedent etait un a-coup de la liaison vers
+                # l'amont, pas une panne de notre cote — et un a-coup ne doit
+                # pas etre rapporte comme une panne. Ce n'est qu'apres cette
+                # contre-epreuve que l'on accuse le resolveur local.
+                r2="$(dig +short +time=5 +tries=2 @127.0.0.1 "${d}" 2>/dev/null \
+                      | grep -E '^[0-9.]+$' | head -1)"
+                if [ -n "${r2}" ]; then
+                    warn "${d} -> ${r2} (intact), mais n a repondu qu a la contre-epreuve"
+                    info "l amont a mis plus de 15 s a repondre la premiere fois :"
+                    info "lenteur passagere de la liaison, ni blocage ni panne locale."
+                else
+                    ko "${d} : l amont repond (${amont}) mais le resolveur local ne renvoie rien"
+                    info "constate deux fois de suite : la panne est bien de notre cote."
+                    info "journalctl -u blocker-resolver -n 30"
+                fi
             fi
             ;;
         *) ok "${d} -> ${r} (intact)" ;;

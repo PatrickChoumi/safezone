@@ -200,13 +200,24 @@ fi
 
 titre "4. La reapplication est journalisee"
 
-# Le mot-cle suit la langue dans laquelle le service tournait quand il a ecrit
-# la ligne, qui n'est pas forcement celle d'aujourd'hui : on cherche les deux.
-if journalctl -u blocker-selfheal.service -n 50 --no-pager 2>/dev/null \
+# Trois unites peuvent avoir fait la reparation, et l'on ne sait pas laquelle a
+# gagne la course : blocker-policies.path reagit en une seconde, le self-heal
+# toutes les cinq minutes, et la garde toutes les quinze secondes. Ne regarder
+# que le journal du self-heal faisait conclure « aucune reparation journalisee »
+# alors que la policy venait bien d'etre remise — par l'unite path, qui est
+# justement la plus rapide des trois.
+#
+# Le mot-cle suit par ailleurs la langue dans laquelle le service tournait quand
+# il a ecrit la ligne, qui n'est pas forcement celle d'aujourd'hui : on cherche
+# les deux formes.
+UNITES_REPARATION="-u blocker-selfheal.service -u blocker-policies.service -u blocker-guard.service"
+# shellcheck disable=SC2086
+if journalctl ${UNITES_REPARATION} -n 80 --no-pager 2>/dev/null \
    | grep -qE 'REPARATION|REPAIR'; then
     ok "la reparation apparait dans le journal"
 else
     warn "aucune ligne « REPARATION » / « REPAIR » recente (le script a pu etre lance hors systemd)"
+    info "unites consultees : blocker-selfheal, blocker-policies, blocker-guard"
 fi
 
 titre "5. Le trigger dpkg fonctionne aussi via blocker-apply-policies"

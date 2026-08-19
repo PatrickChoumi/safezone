@@ -423,7 +423,7 @@ composant 1 "resolveur DNS local"        /etc/dnsmasq.d/blocker-adulte.conf
 composant 2 "application reseau forcee"  /etc/nftables/blocker-adulte.nft
 composant 3 "policies navigateur"        /usr/share/blocker-adulte/policies
 composant 4 "hook initramfs"             /etc/initramfs-tools/hooks/blocker-adulte
-composant 5 "hooks dpkg/apt"             /usr/lib/blocker-adulte/blocker-apply-policies
+composant 5 "reaction a la reinstallation" /usr/lib/blocker-adulte/blocker-apply-policies
 composant 6 "services a surveillance croisee" /lib/systemd/system/blocker-guard.service
 composant 7 "timer de self-heal"         /lib/systemd/system/blocker-selfheal.timer
 composant 8 "journalisation auditd"      /etc/audit/rules.d/blocker-adulte.rules
