@@ -36,7 +36,7 @@ case "${BLOCKER_SAFESEARCH:-oui}" in
     non|no|0)
         if [ -e "${SORTIE}" ]; then
             rm -f "${SORTIE}"
-            blocker_notice "SafeSearch desactive par configuration, ${SORTIE} retire"
+            blocker_notice "$(m "SafeSearch desactive par configuration" "SafeSearch disabled by configuration"), ${SORTIE} $(m "retire" "removed")"
             systemctl reload-or-restart blocker-resolver.service 2>/dev/null || true
         fi
         exit 0
@@ -44,7 +44,7 @@ case "${BLOCKER_SAFESEARCH:-oui}" in
 esac
 
 if ! command -v dig >/dev/null 2>&1; then
-    blocker_err "SafeSearch : la commande dig est requise (paquet dnsutils)"
+    blocker_err "SafeSearch : $(m "la commande dig est requise (paquet" "the dig command is required (package") $(blocker_pkg_pour_role dig))"
     exit 1
 fi
 WORK="$(mktemp -d)"
@@ -168,7 +168,7 @@ while IFS='|' read -r hote domaines; do
     mapfile -t v6 < <(resoudre "${hote}" AAAA)
 
     if [ "${#v4[@]}" -eq 0 ] && [ "${#v6[@]}" -eq 0 ]; then
-        blocker_warn "SafeSearch : ${hote} non resolu, moteur ignore cette fois"
+        blocker_warn "SafeSearch : ${hote} $(m "non resolu, moteur ignore cette fois" "did not resolve, engine skipped this time")"
         moteurs_echec=$((moteurs_echec + 1))
         continue
     fi
@@ -187,7 +187,7 @@ while IFS='|' read -r hote domaines; do
         printf '\n'
     } >> "${CANDIDAT}"
 
-    blocker_info "SafeSearch : ${hote} -> ${v4[*]:-aucune IPv4} ${v6[*]:-}"
+    blocker_info "SafeSearch : ${hote} -> ${v4[*]:-$(m "aucune IPv4" "no IPv4")} ${v6[*]:-}"
     moteurs_ok=$((moteurs_ok + 1))
 done < <(correspondances)
 
@@ -195,12 +195,13 @@ done < <(correspondances)
 # Validation avant mise en place
 # ---------------------------------------------------------------------------
 if [ "${moteurs_ok}" -eq 0 ]; then
-    blocker_warn "SafeSearch : aucun moteur resolu (machine hors ligne ?)"
+    blocker_warn "SafeSearch : $(m "aucun moteur resolu (machine hors ligne ?)" "no engine resolved (machine offline?)")"
     if [ -s "${SORTIE}" ]; then
-        blocker_info "SafeSearch : le fichier en place est conserve"
+        blocker_info "SafeSearch : $(m "le fichier en place est conserve" "the file already in place is kept")"
         exit 0
     fi
-    blocker_err "SafeSearch : aucun fichier en place et aucune resolution possible"
+    blocker_err "SafeSearch : $(m "aucun fichier en place et aucune resolution possible" \
+                              "no file in place and no resolution possible")"
     exit 1
 fi
 
@@ -208,7 +209,8 @@ fi
 # valider par dnsmasq lui-meme avant de la mettre en place.
 if command -v dnsmasq >/dev/null 2>&1; then
     if ! dnsmasq --test --conf-file="${CANDIDAT}" >/dev/null 2>&1; then
-        blocker_err "SafeSearch : le fichier genere est invalide, mise en place abandonnee"
+        blocker_err "SafeSearch : $(m "le fichier genere est invalide, mise en place abandonnee" \
+                              "the generated file is invalid, install aborted")"
         dnsmasq --test --conf-file="${CANDIDAT}" >&2 || true
         exit 1
     fi
@@ -216,8 +218,8 @@ fi
 
 install -m 0644 "${CANDIDAT}" "${SORTIE}"
 
-blocker_info "SafeSearch actif : ${moteurs_ok} moteur(s), ${domaines_total} domaine(s) rediriges vers leur variante stricte"
+blocker_info "$(m "SafeSearch actif" "SafeSearch active") : ${moteurs_ok} $(m "moteur(s)" "engine(s)"), ${domaines_total} $(m "domaine(s) rediriges vers leur variante stricte" "domain(s) redirected to their strict variant")"
 [ "${moteurs_echec}" -gt 0 ] && \
-    blocker_warn "SafeSearch : ${moteurs_echec} moteur(s) non resolu(s) cette fois, nouvelle tentative a la prochaine mise a jour"
+    blocker_warn "SafeSearch : ${moteurs_echec} $(m "moteur(s) non resolu(s) cette fois, nouvelle tentative a la prochaine mise a jour" "engine(s) did not resolve this time, will retry at the next update")"
 
 exit 0

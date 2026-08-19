@@ -20,9 +20,10 @@ Recommends: systemd-resolved,
             initramfs-tools,
             network-manager
 Description: Blocage de contenu adulte, persistant et distribue
- Outil auto-heberge de blocage de contenu adulte pour une machine Ubuntu
+ Outil auto-heberge de blocage de contenu adulte pour une machine Linux
  personnelle, concu pour resister a une desactivation impulsive par la
- redondance plutot que par la dissimulation.
+ redondance plutot que par la dissimulation. Messages en francais ou en
+ anglais selon la locale.
  .
  Huit composants independants, chacun capable de retablir les autres :
  resolveur DNS local (dnsmasq), redirection nftables du trafic DNS,

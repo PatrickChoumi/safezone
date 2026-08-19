@@ -28,7 +28,8 @@ case "$1" in
             # Ordre impose : la garde relance le resolveur, donc elle part en
             # premier. Chaque unite est desactivee avant d'etre arretee.
             for u in blocker-guard.service blocker-resolver.service \
-                     blocker-selfheal.timer blocker-list-update.timer; do
+                     blocker-selfheal.timer blocker-list-update.timer \
+                     blocker-policies.path; do
                 deb-systemd-invoke stop "$u" >/dev/null 2>&1 || \
                     systemctl stop "$u" >/dev/null 2>&1 || true
             done

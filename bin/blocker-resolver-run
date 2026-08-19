@@ -28,19 +28,21 @@ blocker_ensure_rundir
 chown "${BLOCKER_USER}:${BLOCKER_USER}" "${BLOCKER_RUNDIR}" 2>/dev/null || true
 
 if [ ! -x "${DNSMASQ_BIN}" ]; then
-    blocker_err "dnsmasq introuvable : installer le paquet dnsmasq-base"
+    blocker_err "$(m "dnsmasq introuvable : installer le paquet" \
+                 "dnsmasq not found: install the package") $(blocker_pkg_pour_role dnsmasq)"
     exit 1
 fi
 
 if [ ! -r "${DNSMASQ_CONF}" ]; then
-    blocker_err "configuration introuvable : ${DNSMASQ_CONF}"
+    blocker_err "$(m "configuration introuvable" "configuration not found") : ${DNSMASQ_CONF}"
     exit 1
 fi
 
 # Verification de syntaxe avant lancement : une liste de blocage corrompue ne
 # doit pas mettre le resolveur en boucle de redemarrage.
 if ! "${DNSMASQ_BIN}" --test --conf-file="${DNSMASQ_CONF}" >/dev/null 2>&1; then
-    blocker_err "configuration dnsmasq invalide, sortie detaillee :"
+    blocker_err "$(m "configuration dnsmasq invalide, sortie detaillee :" \
+                 "invalid dnsmasq configuration, detailed output:")"
     "${DNSMASQ_BIN}" --test --conf-file="${DNSMASQ_CONF}" >&2 || true
     exit 1
 fi
@@ -49,7 +51,7 @@ DNSMASQ_PID=""
 
 cleanup() {
     if [ -n "${DNSMASQ_PID}" ] && kill -0 "${DNSMASQ_PID}" 2>/dev/null; then
-        blocker_info "arret de dnsmasq (pid ${DNSMASQ_PID})"
+        blocker_info "$(m "arret de dnsmasq" "stopping dnsmasq") (pid ${DNSMASQ_PID})"
         kill -TERM "${DNSMASQ_PID}" 2>/dev/null || true
         wait "${DNSMASQ_PID}" 2>/dev/null || true
     fi
@@ -61,17 +63,18 @@ start_dnsmasq() {
     # vers l'utilisateur blocker-adulte tout seul (directive « user= »).
     "${DNSMASQ_BIN}" -k --conf-file="${DNSMASQ_CONF}" &
     DNSMASQ_PID=$!
-    blocker_info "dnsmasq demarre (pid ${DNSMASQ_PID}) sur ${BLOCKER_LISTEN_ADDR}:${BLOCKER_LISTEN_PORT}"
+    blocker_info "$(m "dnsmasq demarre" "dnsmasq started") (pid ${DNSMASQ_PID}) $(m "sur" "on") ${BLOCKER_LISTEN_ADDR}:${BLOCKER_LISTEN_PORT}"
 }
 
 start_dnsmasq
 sleep 1
 if ! kill -0 "${DNSMASQ_PID}" 2>/dev/null; then
-    blocker_err "dnsmasq s'est arrete immediatement — voir les lignes ci-dessus"
+    blocker_err "$(m "dnsmasq s'est arrete immediatement — voir les lignes ci-dessus" \
+                 "dnsmasq exited immediately — see the lines above")"
     exit 1
 fi
 
-blocker_notify_ready "resolveur actif sur ${BLOCKER_LISTEN_ADDR}:${BLOCKER_LISTEN_PORT}"
+blocker_notify_ready "$(m "resolveur actif sur" "resolver active on") ${BLOCKER_LISTEN_ADDR}:${BLOCKER_LISTEN_PORT}"
 
 guard_restarts=0
 
@@ -82,21 +85,25 @@ while true; do
     if ! kill -0 "${DNSMASQ_PID}" 2>/dev/null; then
         wait "${DNSMASQ_PID}" 2>/dev/null
         rc=$?
-        blocker_err "dnsmasq s'est termine (code ${rc}) — sortie pour laisser systemd redemarrer l'unite"
+        blocker_err "$(m "dnsmasq s'est termine" "dnsmasq exited") (code ${rc}) — $(m "sortie pour laisser systemd redemarrer l'unite" "exiting so systemd restarts the unit")"
         DNSMASQ_PID=""
         exit 1
     fi
 
     # --- surveillance croisee : la garde tourne-t-elle ? -------------------
     if blocker_optout_active; then
-        blocker_notify_status "retrait volontaire en cours : surveillance croisee suspendue"
+        blocker_notify_status "$(m "retrait volontaire en cours : surveillance croisee suspendue" \
+                           "voluntary removal under way: cross-monitoring suspended")"
     elif ! blocker_unit_active blocker-guard.service; then
         guard_restarts=$((guard_restarts + 1))
-        blocker_repair "blocker-guard.service inactif, relance par le resolveur (relance n°${guard_restarts})"
+        blocker_repair "$(m "blocker-guard.service inactif, relance par le resolveur" \
+                    "blocker-guard.service inactive, restarted by the resolver") (n°${guard_restarts})"
         systemctl start blocker-guard.service || \
-            blocker_err "la relance de blocker-guard.service a echoue"
+            blocker_err "$(m "la relance de blocker-guard.service a echoue" \
+                 "restarting blocker-guard.service failed")"
     else
-        blocker_notify_status "resolveur actif ; blocker-guard.service actif"
+        blocker_notify_status "$(m "resolveur actif ; blocker-guard.service actif" \
+                           "resolver active; blocker-guard.service active")"
     fi
 
     blocker_sleep "${BLOCKER_GUARD_INTERVAL}"

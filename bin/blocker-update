@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
         --oui|--yes|-y)     MODE="auto" ;;
         --source)           SOURCE="${2:-}"; shift ;;
         -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "Argument inconnu : $1" >&2; exit 2 ;;
+        *) echo "Argument inconnu / unknown argument : $1" >&2; exit 2 ;;
     esac
     shift
 done
@@ -72,13 +72,13 @@ EOF
 fi
 
 if [ ! -d "${SOURCE}/.git" ]; then
-    blocker_err "${SOURCE} n'est pas un depot git"
-    blocker_err "indiquer le bon chemin : sudo blocker-update --source /chemin/vers/safezone"
+    blocker_err "${SOURCE} $(m "n'est pas un depot git" "is not a git repository")"
+    blocker_err "$(m "indiquer le bon chemin" "give the right path") : sudo blocker-update --source /path/to/safezone"
     exit 1
 fi
 
 if ! command -v git >/dev/null 2>&1; then
-    blocker_err "git est requis (sudo apt install git)"
+    blocker_err "$(m "git est requis : installer le paquet" "git is required: install the package") git"
     exit 1
 fi
 
@@ -89,7 +89,7 @@ if [ ! -r "${FICHIER_SOURCE}" ] || [ "$(cat "${FICHIER_SOURCE}")" != "${SOURCE}"
     install -d -m 0755 "${BLOCKER_CONFDIR}"
     printf '%s\n' "${SOURCE}" > "${FICHIER_SOURCE}"
     chmod 0644 "${FICHIER_SOURCE}"
-    blocker_info "depot memorise pour les prochaines fois : ${SOURCE}"
+    blocker_info "$(m "depot memorise pour les prochaines fois" "repository remembered for next time") : ${SOURCE}"
 fi
 
 # git refuse de travailler dans un depot appartenant a un autre utilisateur —
@@ -97,30 +97,31 @@ fi
 git config --global --get-all safe.directory 2>/dev/null | grep -qxF "${SOURCE}" || \
     git config --global --add safe.directory "${SOURCE}" 2>/dev/null || true
 
-cd "${SOURCE}" || { blocker_err "impossible d'entrer dans ${SOURCE}"; exit 1; }
+cd "${SOURCE}" || { blocker_err "$(m "impossible d'entrer dans" "cannot enter") ${SOURCE}"; exit 1; }
 
 # ---------------------------------------------------------------------------
 # Y a-t-il du nouveau ?
 # ---------------------------------------------------------------------------
-printf '%sDepot :%s %s\n' "${GRAS}" "${Z}" "${SOURCE}"
+printf '%s%s%s %s\n' "${GRAS}" "$(m "Depot :" "Repository:")" "${Z}" "${SOURCE}"
 
 BRANCHE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
-printf '%sBranche :%s %s\n\n' "${GRAS}" "${Z}" "${BRANCHE}"
+printf '%s%s%s %s\n\n' "${GRAS}" "$(m "Branche :" "Branch:")" "${Z}" "${BRANCHE}"
 
 # Des modifications locales seraient ecrasees par la mise a jour : on prefere
 # s'arreter plutot que de faire disparaitre le travail de quelqu'un.
 if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-    printf '%sModifications locales non validees :%s\n' "${ROUGE}" "${Z}"
+    printf '%s%s%s\n' "${ROUGE}" "$(m "Modifications locales non validees :" "Uncommitted local changes:")" "${Z}"
     git status --short | sed 's/^/  /'
-    printf '\nLa mise a jour les ecraserait. Les valider ou les annuler d abord :\n'
-    printf '  cd %s && git stash      # les mettre de cote\n' "${SOURCE}"
-    printf '  cd %s && git checkout . # les jeter\n' "${SOURCE}"
+    printf '\n%s\n' "$(m "La mise a jour les ecraserait. Les valider ou les annuler d abord :" \
+                            "The update would overwrite them. Commit or discard them first:")"
+    printf '  cd %s && git stash      # %s\n' "${SOURCE}" "$(m "les mettre de cote" "set them aside")"
+    printf '  cd %s && git checkout . # %s\n' "${SOURCE}" "$(m "les jeter" "throw them away")"
     exit 1
 fi
 
-blocker_info "recuperation des modifications distantes"
+blocker_info "$(m "recuperation des modifications distantes" "fetching remote changes")"
 if ! git fetch --quiet origin "${BRANCHE}" 2>/dev/null; then
-    blocker_err "git fetch a echoue (machine hors ligne ?)"
+    blocker_err "$(m "git fetch a echoue (machine hors ligne ?)" "git fetch failed (machine offline?)")"
     exit 1
 fi
 
@@ -128,7 +129,7 @@ LOCAL="$(git rev-parse HEAD)"
 DISTANT="$(git rev-parse "origin/${BRANCHE}" 2>/dev/null || echo "${LOCAL}")"
 
 if [ "${LOCAL}" = "${DISTANT}" ]; then
-    printf '%sDeja a jour%s (%s)\n' "${VERT}" "${Z}" "${LOCAL:0:8}"
+    printf '%s%s%s (%s)\n' "${VERT}" "$(m "Deja a jour" "Already up to date")" "${Z}" "${LOCAL:0:8}"
     exit 0
 fi
 
@@ -139,7 +140,8 @@ if git merge-base --is-ancestor "${DISTANT}" "${LOCAL}" 2>/dev/null; then
     NB_AVANCE="$(git rev-list --count "${DISTANT}..${LOCAL}" 2>/dev/null || echo '?')"
     printf '%sDepot local en avance de %s commit(s) sur origin/%s.%s\n' \
         "${VERT}" "${NB_AVANCE}" "${BRANCHE}" "${Z}"
-    printf 'Rien a recuperer. Pour publier vos modifications :\n'
+    printf '%s\n' "$(m "Rien a recuperer. Pour publier vos modifications :" \
+                          "Nothing to fetch. To publish your changes:")"
     printf '  cd %s && git push\n' "${SOURCE}"
     exit 0
 fi
@@ -147,8 +149,10 @@ fi
 if ! git merge-base --is-ancestor "${LOCAL}" "${DISTANT}" 2>/dev/null; then
     printf '%sHistoriques divergents%s : le depot local et origin/%s ont chacun\n' \
         "${ROUGE}" "${Z}" "${BRANCHE}"
-    printf 'des commits que l autre n a pas. La mise a jour automatique s arrete ici :\n'
-    printf 'fusionner a l aveugle risquerait de perdre du travail.\n\n'
+    printf '%s\n' "$(m "des commits que l autre n a pas. La mise a jour automatique s arrete ici :" \
+                          "commits the other does not have. The automatic update stops here:")"
+    printf '%s\n\n' "$(m "fusionner a l aveugle risquerait de perdre du travail." \
+                           "merging blindly could lose work.")"
     printf '  cd %s && git log --oneline --graph --all -20\n' "${SOURCE}"
     exit 1
 fi
@@ -162,8 +166,8 @@ printf '\n%sFichiers modifies :%s\n' "${GRAS}" "${Z}"
 git diff --stat "${LOCAL}..${DISTANT}" 2>/dev/null | tail -20 | sed 's/^/  /'
 
 if [ "${MODE}" = "verifier" ]; then
-    printf '\nMode verification : rien n a ete installe.\n'
-    printf 'Pour appliquer : sudo blocker-update\n'
+    printf '\n%s\n' "$(m "Mode verification : rien n a ete installe." "Check mode: nothing was installed.")"
+    printf '%s : sudo blocker-update\n' "$(m "Pour appliquer" "To apply")"
     exit 0
 fi
 
@@ -171,45 +175,52 @@ fi
 # Confirmation
 # ---------------------------------------------------------------------------
 if [ "${MODE}" = "interactif" ]; then
-    printf '\n%sCes modifications vont s executer en root sur cette machine.%s\n' "${GRAS}" "${Z}"
-    printf 'Les avez-vous relues ? Appliquer la mise a jour ? [o/N] '
+    printf '\n%s%s%s\n' "${GRAS}" \
+        "$(m "Ces modifications vont s executer en root sur cette machine." \
+             "These changes will run as root on this machine.")" "${Z}"
+    printf '%s [%s] ' "$(m "Les avez-vous relues ? Appliquer la mise a jour ?" \
+                            "Have you reviewed them? Apply the update?")" "$(m "o/N" "y/N")"
     read -r reponse </dev/tty || reponse=""
     case "${reponse}" in
         o|O|oui|y|Y|yes) ;;
-        *) printf 'Annule. Rien n a ete modifie.\n'; exit 0 ;;
+        *) printf '%s\n' "$(m "Annule. Rien n a ete modifie." "Cancelled. Nothing was changed.")"; exit 0 ;;
     esac
 fi
 
 # ---------------------------------------------------------------------------
 # Application
 # ---------------------------------------------------------------------------
-printf '\n%s=== Mise a jour ===%s\n' "${GRAS}" "${Z}"
+printf '\n%s=== %s ===%s\n' "${GRAS}" "$(m "Mise a jour" "Update")" "${Z}"
 
 if ! git merge --ff-only "origin/${BRANCHE}" 2>&1 | sed 's/^/  /'; then
-    blocker_err "la mise a jour n est pas une avance rapide — historique divergent"
-    blocker_err "regler a la main : cd ${SOURCE} && git status"
+    blocker_err "$(m "la mise a jour n est pas une avance rapide — historique divergent" \
+                     "the update is not a fast-forward — diverged history")"
+    blocker_err "$(m "regler a la main" "sort it out by hand") : cd ${SOURCE} && git status"
     exit 1
 fi
 
 # On refuse d'installer du code qui ne passe pas ses propres controles : une
 # erreur de syntaxe dans un watchdog laisserait la machine sans protection.
-blocker_info "verification du code recupere (make check)"
+blocker_info "$(m "verification du code recupere (make check)" "checking the fetched code (make check)")"
 if ! make -C "${SOURCE}" check 2>&1 | tail -5 | sed 's/^/  /'; then
-    blocker_err "le code recupere ne passe pas « make check », installation abandonnee"
-    blocker_err "le systeme reste sur la version precedente, toujours fonctionnelle"
-    blocker_err "revenir en arriere : cd ${SOURCE} && git reset --hard ${LOCAL}"
+    blocker_err "$(m "le code recupere ne passe pas « make check », installation abandonnee" \
+                     "the fetched code fails « make check », install aborted")"
+    blocker_err "$(m "le systeme reste sur la version precedente, toujours fonctionnelle" \
+                     "the system stays on the previous version, still working")"
+    blocker_err "$(m "revenir en arriere" "roll back") : cd ${SOURCE} && git reset --hard ${LOCAL}"
     exit 1
 fi
 
-blocker_info "installation des fichiers"
+blocker_info "$(m "installation des fichiers" "installing the files")"
 if ! make -C "${SOURCE}" install DESTDIR=/ >/dev/null 2>&1; then
-    blocker_err "« make install » a echoue"
+    blocker_err "$(m "« make install » a echoue" "« make install » failed")"
     exit 1
 fi
 
-blocker_info "reconfiguration"
+blocker_info "$(m "reconfiguration" "reconfiguring")"
 /usr/lib/blocker-adulte/blocker-configure || \
-    blocker_warn "blocker-configure a signale une erreur, voir ci-dessus"
+    blocker_warn "$(m "blocker-configure a signale une erreur, voir ci-dessus" \
+                      "blocker-configure reported an error, see above")"
 
 # La mise a jour peut avoir change les modeles de configuration : on force une
 # passe de self-heal plutot que d'attendre le prochain creneau de cinq minutes.
@@ -217,11 +228,13 @@ if [ -x /usr/lib/blocker-adulte/blocker-selfheal ]; then
     /usr/lib/blocker-adulte/blocker-selfheal >/dev/null 2>&1 || true
 fi
 
-printf '\n%sMise a jour terminee%s : %s -> %s\n' "${VERT}" "${Z}" "${LOCAL:0:8}" "${DISTANT:0:8}"
-printf '\nVerifier que tout va bien :\n'
+printf '\n%s%s%s : %s -> %s\n' "${VERT}" "$(m "Mise a jour terminee" "Update finished")" "${Z}" \
+    "${LOCAL:0:8}" "${DISTANT:0:8}"
+printf '\n%s\n' "$(m "Verifier que tout va bien :" "Check that everything is fine:")"
 printf '  sudo blocker-status\n'
 printf '  sudo %s/tests/run_all.sh\n' "${SOURCE}"
-printf '\n%sEn cas de probleme, revenir en arriere :%s\n' "${GRIS}" "${Z}"
+printf '\n%s%s%s\n' "${GRIS}" "$(m "En cas de probleme, revenir en arriere :" \
+                                       "If something goes wrong, roll back:")" "${Z}"
 printf '  %scd %s && git reset --hard %s && sudo ./install.sh%s\n' \
     "${GRIS}" "${SOURCE}" "${LOCAL:0:8}" "${Z}"
 

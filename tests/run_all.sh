@@ -28,6 +28,8 @@ fi
 # test_watchdog_cross_restart.sh coupe le DNS quelques secondes : il n'est pas
 # dans la liste par defaut pour ne pas surprendre.
 TESTS="test_no_hidden_files.sh
+test_portabilite.sh
+test_i18n.sh
 test_dns_leak.sh
 test_doh_blocked.sh
 test_safesearch.sh
@@ -39,6 +41,16 @@ if [ "${TOUT}" -eq 1 ]; then
     TESTS="${TESTS}
 test_watchdog_cross_restart.sh"
 fi
+
+# Les commandes de l'outil parlent francais ou anglais ; la suite de tests, non.
+# C'est un choix assume : 442 messages d'assertion de plus a traduire auraient
+# triple la surface traduite, et cette surface-la est justement celle qui
+# valide tout le reste — une erreur de transcription y serait la plus couteuse.
+# Autant le dire une fois, clairement, plutot que de melanger les deux langues.
+case "$(printf '%s' "${BLOCKER_LANG:-${LC_ALL:-${LANG:-}}}")" in
+    fr*|FR*|"") ;;
+    *) printf 'Note: the test suite reports in French only. See README.en.md.\n\n' ;;
+esac
 
 reussis=0; echoues=0; ignores=0
 liste_echecs=""

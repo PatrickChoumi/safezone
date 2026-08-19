@@ -25,12 +25,13 @@ set -uo pipefail
 blocker_require_root
 
 if ! command -v nft >/dev/null 2>&1 || ! command -v dig >/dev/null 2>&1; then
-    blocker_err "nft et dig sont requis (paquets nftables et dnsutils)"
+    blocker_err "$(m "nft et dig sont requis (paquets" "nft and dig are required (packages") nftables, $(blocker_pkg_pour_role dig))"
     exit 1
 fi
 
 if ! nft list table inet blocker_adulte >/dev/null 2>&1; then
-    blocker_warn "table inet blocker_adulte absente, rien a rafraichir"
+    blocker_warn "$(m "table inet blocker_adulte absente, rien a rafraichir" \
+                  "table inet blocker_adulte missing, nothing to refresh")"
     exit 0
 fi
 
@@ -114,15 +115,17 @@ while IFS= read -r hote; do
 done < <(hotes_doh)
 
 if [ "${hotes_resolus}" -eq 0 ]; then
-    blocker_warn "rafraichissement DoH : aucun hote resolu (machine hors ligne ?)"
-    blocker_info "les adresses ecrites en dur dans le jeu de regles restent actives"
+    blocker_warn "$(m "rafraichissement DoH : aucun hote resolu (machine hors ligne ?)" \
+                  "DoH refresh: no host resolved (machine offline?)")"
+    blocker_info "$(m "les adresses ecrites en dur dans le jeu de regles restent actives" \
+                  "the addresses hard-coded in the ruleset stay active")"
     exit 0
 fi
 
 total_v4="$(nft list set inet blocker_adulte doh_ipv4 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u | wc -l)"
 total_v6="$(nft list set inet blocker_adulte doh_ipv6 2>/dev/null | grep -cE '[0-9a-fA-F]{1,4}:')"
 
-blocker_info "rafraichissement DoH : ${hotes_resolus} hotes resolus, jeux portes a ${total_v4} adresses IPv4 et ~${total_v6} lignes IPv6"
+blocker_info "$(m "rafraichissement DoH" "DoH refresh") : ${hotes_resolus} $(m "hotes resolus" "hosts resolved"), ${total_v4} $(m "adresses IPv4 et" "IPv4 addresses and") ~${total_v6} $(m "lignes IPv6" "IPv6 lines")"
 
 # Note volontaire : les ajouts vivent dans le noyau, pas dans le fichier. Un
 # rechargement complet (« nft -f ») repart de la liste ecrite en dur, et ce

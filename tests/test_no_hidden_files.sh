@@ -197,8 +197,23 @@ while IFS= read -r declare_; do
             info "(absent, navigateur non installe) ${declare_}" ; continue ;;
         /etc/audit/*)
             info "(absent, auditd non installe) ${declare_}" ; continue ;;
-        /etc/initramfs-tools/*)
-            info "(absent, initramfs-tools non installe) ${declare_}" ; continue ;;
+        /etc/initramfs-tools/*|/usr/lib/dracut/*|/etc/initcpio/*)
+            # Un seul des trois generateurs est present sur une machine donnee.
+            info "(absent, generateur d initramfs different) ${declare_}" ; continue ;;
+        /etc/pacman.d/*)
+            info "(absent, pacman non utilise sur cette distribution) ${declare_}" ; continue ;;
+        /usr/lib/systemd/system/*|/lib/systemd/system/*)
+            # usr-merge : les deux chemins designent le meme fichier sur une
+            # distribution recente, un seul des deux existe sur une ancienne.
+            autre="${declare_#/usr}"
+            case "${declare_}" in
+                /usr/lib/systemd/*) autre="/lib/systemd/${declare_#/usr/lib/systemd/}" ;;
+                *)                  autre="/usr${declare_}" ;;
+            esac
+            if [ -e "${autre}" ]; then
+                continue
+            fi
+            ;;
         /run/blocker-adulte|/run/blocker-adulte/*)
             info "(absent, cree seulement quand les services tournent) ${declare_}" ; continue ;;
     esac

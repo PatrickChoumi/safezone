@@ -1,0 +1,47 @@
+#!/bin/sh
+# blocker-adulte — chargement des regles de base dans l'initramfs (composant 4)
+#
+# Ce script vit A L'INTERIEUR de l'image initramfs, en /usr/sbin/blocker-adulte-load-rules.
+# Il y est depose par le generateur d'image utilise par la distribution :
+#   - initramfs-tools : /etc/initramfs-tools/hooks/blocker-adulte
+#   - dracut          : module 99blocker-adulte
+#   - mkinitcpio      : /etc/initcpio/install/blocker-adulte
+#
+# Les trois appellent ce meme script au meme moment du demarrage : apres le
+# montage du disque racine, juste avant le switch_root. Les regles nftables
+# etant un etat du noyau, elles survivent au switch_root et restent donc
+# actives en mode recovery / single-user, ou nftables.service et les deux
+# watchdogs ne sont pas lances.
+#
+# Ce script ne touche ni au bootloader ni au firmware, et n'empeche jamais le
+# demarrage : toute erreur est signalee puis ignoree.
+
+RULES="/etc/blocker-adulte/base.nft"
+
+say() { echo "blocker-adulte (initramfs): $*"; }
+
+# L'emplacement de nft depend de la disposition de l'image : usr-merge ou non,
+# selon le generateur et la distribution. On cherche aux emplacements possibles
+# plutot que d'en supposer un seul.
+NFT=""
+for candidat in /usr/sbin/nft /sbin/nft /usr/bin/nft /bin/nft; do
+    if [ -x "${candidat}" ]; then NFT="${candidat}"; break; fi
+done
+
+[ -n "${NFT}" ] || { say "nft absent de l'initramfs, regles de base non chargees"; exit 0; }
+[ -r "${RULES}" ] || { say "jeu de regles de base absent, rien a charger"; exit 0; }
+
+# Les modules ont ete embarques a la construction, mais ils ne sont pas
+# forcement charges a ce stade : nft les demande au noyau tout seul si
+# l'autochargement fonctionne, sinon on aide un peu.
+for module in nf_tables nft_chain_nat nft_redir nft_reject_inet; do
+    modprobe "${module}" 2>/dev/null || true
+done
+
+if "${NFT}" -f "${RULES}" 2>/dev/null; then
+    say "regles de base chargees (redirection DNS + blocage DoT/DoQ actifs des le boot)"
+else
+    say "ECHEC du chargement des regles de base ; le systeme principal les rechargera via nftables.service"
+fi
+
+exit 0

@@ -1,0 +1,20 @@
+#!/usr/bin/ash
+# blocker-adulte — point d'entree mkinitcpio au demarrage (composant 4)
+#
+# Installe dans : /etc/initcpio/hooks/blocker-adulte
+# Embarque dans l'image par : /etc/initcpio/install/blocker-adulte
+#
+# « latehook » s'execute apres le montage du disque racine et avant le
+# switch_root : c'est le moment equivalent a init-bottom chez initramfs-tools
+# et a pre-pivot chez dracut.
+#
+# Comme chez dracut, ce fichier est SOURCE par l'init de l'image : aucun
+# « exit » ici, il arreterait le demarrage.
+
+run_latehook() {
+    if [ -x /usr/sbin/blocker-adulte-load-rules ]; then
+        /usr/sbin/blocker-adulte-load-rules || :
+    else
+        echo "blocker-adulte (initramfs): chargeur absent de l'image, regles non chargees"
+    fi
+}

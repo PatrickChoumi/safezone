@@ -1,0 +1,28 @@
+# blocker-adulte — hook pacman (composant 5, Arch et derivees)
+#
+# Installe dans : /etc/pacman.d/hooks/95-blocker-adulte.hook
+#
+# Equivalent du trigger dpkg de Debian : reinstaller ou mettre a jour un
+# navigateur remet en place son repertoire /etc et peut emporter la policy. Ce
+# hook la redepose immediatement apres la transaction, sans attendre la passe
+# de self-heal.
+#
+# pacman et dpkg sont les deux seuls gestionnaires a offrir ce point d'accroche
+# par simple depot de fichier. Ailleurs — et ici aussi, en second filet —
+# blocker-policies.path surveille directement les repertoires de policies.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = firefox
+Target = firefox-esr
+Target = chromium
+Target = brave
+Target = brave-bin
+Target = google-chrome
+
+[Action]
+Description = blocker-adulte : reapplication des policies navigateur
+When = PostTransaction
+Exec = /usr/lib/blocker-adulte/blocker-apply-policies

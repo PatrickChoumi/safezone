@@ -41,19 +41,20 @@ for a in "${BLOCKER_UPSTREAM_1:-}" "${BLOCKER_UPSTREAM_2:-}"; do
     if adresse_valide "${a}"; then
         amonts+=("${a}")
     else
-        blocker_err "adresse amont invalide, ignoree : ${a}"
+        blocker_err "$(m "adresse amont invalide, ignoree" "invalid upstream address, skipped") : ${a}"
     fi
 done
 
 if [ "${#amonts[@]}" -eq 0 ]; then
-    blocker_err "aucun resolveur amont valide dans ${BLOCKER_CONF}"
-    blocker_err "correction : renseigner BLOCKER_UPSTREAM_1 puis relancer ce script"
+    blocker_err "$(m "aucun resolveur amont valide dans" "no valid upstream resolver in") ${BLOCKER_CONF}"
+    blocker_err "$(m "correction : renseigner BLOCKER_UPSTREAM_1 puis relancer ce script" \
+                 "fix: set BLOCKER_UPSTREAM_1, then run this script again")"
     # On ne laisse pas un fichier vide : sans amont, dnsmasq ne resout plus rien.
     if [ -s "${SORTIE}" ]; then
-        blocker_warn "le fichier en place est conserve"
+        blocker_warn "$(m "le fichier en place est conserve" "the file already in place is kept")"
         exit 1
     fi
-    blocker_warn "repli sur Cloudflare for Families (1.1.1.3 / 1.0.0.3)"
+    blocker_warn "$(m "repli sur" "falling back to") Cloudflare for Families (1.1.1.3 / 1.0.0.3)"
     amonts=(1.1.1.3 1.0.0.3)
 fi
 
@@ -78,7 +79,8 @@ trap 'rm -f "${WORK}"' EXIT
 
 if command -v dnsmasq >/dev/null 2>&1; then
     if ! dnsmasq --test --conf-file="${WORK}" >/dev/null 2>&1; then
-        blocker_err "le fichier d amont genere est invalide, mise en place abandonnee"
+        blocker_err "$(m "le fichier d amont genere est invalide, mise en place abandonnee" \
+                 "the generated upstream file is invalid, install aborted")"
         dnsmasq --test --conf-file="${WORK}" >&2 || true
         exit 1
     fi
@@ -90,5 +92,5 @@ if [ -e "${SORTIE}" ] && \
 fi
 
 install -m 0644 "${WORK}" "${SORTIE}"
-blocker_repair "resolveurs amont mis a jour : ${amonts[*]}"
+blocker_repair "$(m "resolveurs amont mis a jour" "upstream resolvers updated") : ${amonts[*]}"
 exit 0

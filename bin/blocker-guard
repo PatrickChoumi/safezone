@@ -46,27 +46,34 @@ resolver_repond() {
 verifier_resolveur() {
     if blocker_unit_active blocker-resolver.service; then
         if ! resolver_repond; then
-            blocker_repair "blocker-resolver.service actif mais ne repond pas, redemarrage"
+            blocker_repair "$(m "blocker-resolver.service actif mais ne repond pas, redemarrage" \
+                    "blocker-resolver.service running but not answering, restarting")"
             systemctl restart blocker-resolver.service || \
-                blocker_err "redemarrage de blocker-resolver.service en echec"
+                blocker_err "$(m "redemarrage de blocker-resolver.service en echec" \
+                 "restarting blocker-resolver.service failed")"
         fi
         return 0
     fi
 
     resolver_restarts=$((resolver_restarts + 1))
-    blocker_repair "blocker-resolver.service inactif, relance par la garde (relance n°${resolver_restarts})"
+    blocker_repair "$(m "blocker-resolver.service inactif, relance par la garde" \
+                    "blocker-resolver.service inactive, restarted by the guard") (n°${resolver_restarts})"
     if systemctl start blocker-resolver.service; then
-        blocker_info "blocker-resolver.service relance avec succes"
+        blocker_info "$(m "blocker-resolver.service relance avec succes" \
+                  "blocker-resolver.service restarted successfully")"
     else
-        blocker_err "la relance de blocker-resolver.service a echoue — voir journalctl -u blocker-resolver"
+        blocker_err "$(m "la relance de blocker-resolver.service a echoue" \
+                 "restarting blocker-resolver.service failed") — journalctl -u blocker-resolver"
     fi
 }
 
 verifier_nftables() {
     if ! /usr/lib/blocker-adulte/blocker-apply-nftables --check >/dev/null 2>&1; then
-        blocker_repair "regles nftables absentes ou alterees, rechargement"
+        blocker_repair "$(m "regles nftables absentes ou alterees, rechargement" \
+                    "nftables rules missing or altered, reloading")"
         /usr/lib/blocker-adulte/blocker-apply-nftables --force || \
-            blocker_err "rechargement des regles nftables en echec"
+            blocker_err "$(m "rechargement des regles nftables en echec" \
+                 "reloading the nftables rules failed")"
     fi
 }
 
@@ -80,23 +87,26 @@ verifier_policies() {
     done < <(blocker_browser_targets)
 
     if [ "${manquant}" -eq 1 ]; then
-        blocker_repair "au moins une policy navigateur manque, redeploiement"
+        blocker_repair "$(m "au moins une policy navigateur manque, redeploiement" \
+                    "at least one browser policy is missing, redeploying")"
         /usr/lib/blocker-adulte/blocker-apply-policies || \
-            blocker_err "redeploiement des policies en echec"
+            blocker_err "$(m "redeploiement des policies en echec" "redeploying the policies failed")"
     fi
 }
 
 verifier_resolved() {
     local dropin="/etc/systemd/resolved.conf.d/blocker-adulte.conf"
     if [ ! -s "${dropin}" ]; then
-        blocker_repair "drop-in systemd-resolved manquant, reecriture"
+        blocker_repair "$(m "drop-in systemd-resolved manquant, reecriture" \
+                    "systemd-resolved drop-in missing, rewriting")"
         blocker_install_protected \
             "${BLOCKER_SHAREDIR}/conf/resolved-blocker-adulte.conf" "${dropin}"
         systemctl restart systemd-resolved.service 2>/dev/null || true
     fi
 }
 
-trap 'blocker_info "arret demande, sortie de la boucle de garde"; exit 0' TERM INT
+trap 'blocker_info "$(m "arret demande, sortie de la boucle de garde" \
+                        "stop requested, leaving the guard loop")"; exit 0' TERM INT
 
 while true; do
     blocker_watchdog_ping
@@ -120,7 +130,7 @@ while true; do
     # Bilan periodique dans le journal, meme quand tout va bien : un watchdog
     # muet est indiscernable d'un watchdog mort.
     if [ $((pass % 40)) -eq 0 ]; then
-        blocker_info "bilan : ${pass} passes, ${resolver_restarts} relance(s) du resolveur"
+        blocker_info "$(m "bilan" "summary") : ${pass} $(m "passes" "passes"), ${resolver_restarts} $(m "relance(s) du resolveur" "resolver restart(s)")"
     fi
 
     blocker_sleep "${BLOCKER_GUARD_INTERVAL}"

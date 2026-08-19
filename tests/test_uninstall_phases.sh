@@ -19,6 +19,12 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 
+# Ce test lit la sortie du desinstalleur pour verifier son comportement — les
+# jetons, les refus, l'ordre impose. Le desinstalleur parle deux langues ; la
+# suite de tests, une seule. On lui impose donc le francais le temps du test,
+# plutot que de tenir deux jeux de motifs qui divergeraient.
+export BLOCKER_LANG=fr
+
 exiger_root
 
 UNINST=/usr/sbin/blocker-uninstall
@@ -111,19 +117,46 @@ done
 
 titre "6. Ce n'est pas un piege"
 
-if "${UNINST}" --manuel 2>&1 | grep -q 'Procedure manuelle'; then
+if "${UNINST}" --manuel 2>&1 | grep -qiE 'Procedure manuelle|Manual procedure'; then
     ok "la procedure manuelle equivalente est affichable"
 else
     ko "aucune procedure manuelle affichable"
 fi
 
-for attendu in 'chattr -i' 'apt purge' 'update-initramfs' 'nft delete table' 'deluser'; do
-    if "${UNINST}" --manuel 2>&1 | grep -qF "${attendu}"; then
+MANUEL="$("${UNINST}" --manuel 2>&1)"
+
+# Les etapes qui ne dependent pas de la distribution.
+for attendu in 'chattr -i' 'nft delete table' '/var/lib/blocker-adulte'; do
+    if printf '%s' "${MANUEL}" | grep -qF "${attendu}"; then
         ok "la procedure manuelle couvre : ${attendu}"
     else
         ko "la procedure manuelle ne mentionne pas : ${attendu}"
     fi
 done
+
+# Les trois etapes dont la commande depend de la distribution. La procedure
+# affichee doit etre celle de CETTE machine : une procedure manuelle qui cite
+# « apt purge » sur une Fedora ne vaut rien.
+verifier_variante() {
+    local libelle="$1"; shift
+    local variante
+    for variante in "$@"; do
+        if printf '%s' "${MANUEL}" | grep -qF "${variante}"; then
+            ok "la procedure manuelle couvre ${libelle} : ${variante}"
+            return 0
+        fi
+    done
+    ko "la procedure manuelle ne mentionne aucune commande pour ${libelle}"
+    info "attendu l'une de : $*"
+    return 1
+}
+
+verifier_variante "le retrait du paquet" \
+    'apt purge' 'dnf remove' 'pacman -Rns' 'zypper remove' 'apk del'
+verifier_variante "la reconstruction de l initramfs" \
+    'update-initramfs' 'dracut --force' 'mkinitcpio -P' 'aucun generateur'
+verifier_variante "la suppression de l utilisateur" \
+    'userdel blocker-adulte' 'deluser --system blocker-adulte'
 
 if "${UNINST}" --etat 2>&1 | grep -qE 'Phase [1-4]'; then
     ok "« --etat » indique ou l'on en est"

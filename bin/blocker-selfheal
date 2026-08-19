@@ -29,11 +29,12 @@ note() { ecarts=$((ecarts + 1)); blocker_repair "$*"; }
 # contournement le plus simple de tout l'outil, l'utilisateur doit savoir si ce
 # trou est ouvert ou ferme sur sa machine.
 if blocker_hosts_verrouillable; then
-    blocker_info "/etc/hosts : verrouille (immuable)"
+    blocker_info "/etc/hosts : $(m "verrouille (immuable)" "locked (immutable)")"
 else
-    blocker_warn "/etc/hosts : NON verrouille — une ligne y suffit a contourner le resolveur"
-    blocker_warn "  raison : BLOCKER_LOCK_HOSTS=${BLOCKER_LOCK_HOSTS:-auto} et/ou Docker/podman/LXC/cloud-init detecte"
-    blocker_warn "  les modifications restent tracees par auditd (ausearch -k blocker-adulte)"
+    blocker_warn "/etc/hosts : $(m "NON verrouille — une ligne y suffit a contourner le resolveur" \
+                              "NOT locked — a single line there bypasses the resolver")"
+    blocker_warn "  $(m "raison" "reason") : BLOCKER_LOCK_HOSTS=${BLOCKER_LOCK_HOSTS:-auto} $(m "et/ou Docker/podman/LXC/cloud-init detecte" "and/or Docker/podman/LXC/cloud-init detected")"
+    blocker_warn "  $(m "les modifications restent tracees par auditd" "changes are still traced by auditd") (ausearch -k blocker-adulte)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -66,12 +67,12 @@ verifier_fichier() {
     local modele="$1" cible="$2" mode="${3:-0644}"
     [ -r "${modele}" ] || return 0
     if [ ! -e "${cible}" ]; then
-        note "fichier absent, reinstalle : ${cible}"
+        note "$(m "fichier absent, reinstalle" "file missing, reinstalled") : ${cible}"
         blocker_install_protected "${modele}" "${cible}" "${mode}"
         return 0
     fi
     if ! cmp -s "${modele}" "${cible}"; then
-        note "fichier modifie, restaure depuis le modele : ${cible}"
+        note "$(m "fichier modifie, restaure depuis le modele" "file modified, restored from template") : ${cible}"
         blocker_install_protected "${modele}" "${cible}" "${mode}"
     fi
 }
@@ -97,7 +98,7 @@ while IFS='|' read -r dir filename _f; do
 done < <(blocker_browser_targets)
 
 /usr/lib/blocker-adulte/blocker-apply-policies >/dev/null 2>&1 || \
-    blocker_warn "blocker-apply-policies a signale une erreur"
+    blocker_warn "$(m "blocker-apply-policies a signale une erreur" "blocker-apply-policies reported an error")"
 
 policies_apres=0
 while IFS='|' read -r dir filename _f; do
@@ -106,7 +107,7 @@ while IFS='|' read -r dir filename _f; do
 done < <(blocker_browser_targets)
 
 if [ "${policies_apres}" -gt "${policies_avant}" ]; then
-    note "policies navigateur redeployees (${policies_avant} -> ${policies_apres} fichiers en place)"
+    note "$(m "policies navigateur redeployees" "browser policies redeployed") (${policies_avant} -> ${policies_apres})"
 fi
 
 # ---------------------------------------------------------------------------
@@ -115,11 +116,12 @@ fi
 # Sans amont, dnsmasq ne resout plus rien : la machine parait privee de reseau.
 UP="${BLOCKER_STATEDIR}/blocklists/01-upstream.conf"
 if [ ! -s "${UP}" ]; then
-    note "fichier d amont absent, regeneration"
+    note "$(m "fichier d amont absent, regeneration" "upstream file missing, regenerating")"
     /usr/lib/blocker-adulte/blocker-upstream >/dev/null 2>&1 && \
         systemctl restart blocker-resolver.service 2>/dev/null || true
 elif ! grep -q "^server=${BLOCKER_UPSTREAM_1}\$" "${UP}" 2>/dev/null; then
-    note "amont du fichier different de blocker.conf, regeneration"
+    note "$(m "amont du fichier different de blocker.conf, regeneration" \
+           "file upstream differs from blocker.conf, regenerating")"
     /usr/lib/blocker-adulte/blocker-upstream >/dev/null 2>&1 && \
         systemctl restart blocker-resolver.service 2>/dev/null || true
 fi
@@ -149,7 +151,7 @@ safesearch_actif() {
 
 if safesearch_actif; then
     if [ ! -s "${SS}" ]; then
-        note "SafeSearch absent, regeneration"
+        note "$(m "SafeSearch absent, regeneration" "SafeSearch missing, regenerating")"
         /usr/lib/blocker-adulte/blocker-safesearch >/dev/null 2>&1 && \
             systemctl restart blocker-resolver.service 2>/dev/null || true
     else
@@ -165,13 +167,14 @@ if safesearch_actif; then
                           | sed 's|.*/||' | grep -E '^[0-9.]+$' | sort -u | head -1)"
 
             if [ -n "${reel}" ] && [ -n "${enregistre}" ] && [ "${reel}" != "${enregistre}" ]; then
-                note "adresse SafeSearch perimee (${enregistre} -> ${reel}), regeneration immediate"
-                note "sans cette correction, www.google.com pointerait vers une adresse morte"
+                note "$(m "adresse SafeSearch perimee" "stale SafeSearch address") (${enregistre} -> ${reel}), $(m "regeneration immediate" "regenerating now")"
+                note "$(m "sans cette correction, www.google.com pointerait vers une adresse morte" \
+           "without this fix, www.google.com would point at a dead address")"
                 if /usr/lib/blocker-adulte/blocker-safesearch >/dev/null 2>&1; then
                     systemctl restart blocker-resolver.service 2>/dev/null || true
-                    blocker_info "SafeSearch regenere et resolveur redemarre"
+                    blocker_info "$(m "SafeSearch regenere et resolveur redemarre" "SafeSearch regenerated and resolver restarted")"
                 else
-                    blocker_err "regeneration du SafeSearch en echec"
+                    blocker_err "$(m "regeneration du SafeSearch en echec" "regenerating SafeSearch failed")"
                 fi
             fi
         fi
@@ -182,16 +185,19 @@ fi
 # 4. Regles nftables actives vs attendues
 # ---------------------------------------------------------------------------
 if ! /usr/lib/blocker-adulte/blocker-apply-nftables --check >/dev/null 2>&1; then
-    note "regles nftables non conformes, rechargement"
+    note "$(m "regles nftables non conformes, rechargement" "nftables rules non-compliant, reloading")"
     /usr/lib/blocker-adulte/blocker-apply-nftables --force >/dev/null 2>&1 || \
-        blocker_err "rechargement nftables en echec"
+        blocker_err "$(m "rechargement nftables en echec" "reloading nftables failed")"
 fi
 
-# Ligne d'inclusion dans /etc/nftables.conf (persistance au boot)
-if [ -e /etc/nftables.conf ] && ! grep -qF 'blocker-adulte.nft' /etc/nftables.conf; then
-    note "ligne d'inclusion absente de /etc/nftables.conf, reajoutee"
+# Ligne d'inclusion dans le fichier charge par nftables.service (persistance au
+# boot). Ce fichier n'est pas au meme endroit partout : /etc/nftables.conf sur
+# Debian, Arch et openSUSE, /etc/sysconfig/nftables.conf sur Fedora et RHEL.
+NFT_PERSIST="$(blocker_nft_persist_file)"
+if [ -e "${NFT_PERSIST}" ] && ! grep -qF 'blocker-adulte.nft' "${NFT_PERSIST}"; then
+    note "$(m "ligne d'inclusion absente de" "include line missing from") ${NFT_PERSIST}, $(m "reajoutee" "re-added")"
     printf '\n# blocker-adulte (composant 2)\ninclude "/etc/nftables/blocker-adulte.nft"\n' \
-        >> /etc/nftables.conf
+        >> "${NFT_PERSIST}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -199,8 +205,8 @@ fi
 # ---------------------------------------------------------------------------
 for unite in blocker-resolver.service blocker-guard.service; do
     if ! blocker_unit_active "${unite}"; then
-        note "${unite} inactif, relance par le self-heal"
-        systemctl start "${unite}" || blocker_err "relance de ${unite} en echec"
+        note "${unite} $(m "inactif, relance par le self-heal" "inactive, restarted by self-heal")"
+        systemctl start "${unite}" || blocker_err "$(m "relance de" "restarting") ${unite} $(m "en echec" "failed")"
     fi
 done
 
@@ -211,22 +217,25 @@ done
 # automatiquement : « update-initramfs -u » toutes les 5 minutes userait le
 # disque pour rien et masquerait les vraies mises a jour de noyau. Un ecart est
 # signale, la correction est manuelle et documentee dans le README.
-if [ -d /etc/initramfs-tools ]; then
-    for h in /etc/initramfs-tools/hooks/blocker-adulte \
-             /etc/initramfs-tools/scripts/init-bottom/blocker-adulte; do
-        if [ ! -x "$h" ]; then
-            note "hook initramfs manquant : $h — le reinstaller puis lancer « update-initramfs -u »"
+# Les emplacements dependent du generateur d'images de la distribution :
+# blocker-os.sh les connait, ce script ne les suppose pas.
+if [ "${BLOCKER_INITRAMFS}" != "aucun" ]; then
+    while IFS= read -r h; do
+        [ -n "${h}" ] || continue
+        if [ ! -e "$h" ]; then
+            note "$(m "hook initramfs manquant" "initramfs hook missing") : $h"
+            note "$(m "le reinstaller puis relancer" "reinstall it, then run") : sudo /usr/lib/blocker-adulte/blocker-configure"
         fi
-    done
+    done < <(blocker_initramfs_hook_paths)
 fi
 
 # ---------------------------------------------------------------------------
 # Compte-rendu
 # ---------------------------------------------------------------------------
 if [ "${ecarts}" -eq 0 ]; then
-    blocker_info "self-heal : aucun ecart detecte"
+    blocker_info "self-heal : $(m "aucun ecart detecte" "no drift detected")"
 else
-    blocker_notice "self-heal : ${ecarts} ecart(s) detecte(s) et corrige(s), detail ci-dessus"
+    blocker_notice "self-heal : ${ecarts} $(m "ecart(s) detecte(s) et corrige(s), detail ci-dessus" "drift(s) detected and fixed, details above")"
 fi
 
 exit 0

@@ -18,7 +18,14 @@ libdir      = $(prefix)/lib/blocker-adulte
 sharedir    = $(prefix)/share/blocker-adulte
 docdir      = $(prefix)/share/doc/blocker-adulte
 sbindir     = $(prefix)/sbin
-unitdir     = /lib/systemd/system
+
+# Repertoire des unites systemd. Il vaut /usr/lib/systemd/system sur toute
+# distribution usr-merge (toutes les recentes) et /lib/systemd/system sur les
+# plus anciennes. On le demande a systemd plutot que de le supposer ; le repli
+# ne sert que si pkg-config est absent de la machine de construction.
+unitdir    ?= $(shell pkg-config --variable=systemdsystemunitdir systemd 2>/dev/null || \
+                      ([ -d /usr/lib/systemd/system ] && echo /usr/lib/systemd/system) || \
+                      echo /lib/systemd/system)
 
 INSTALL      = install
 INSTALL_PROG = $(INSTALL) -m 0755
@@ -34,6 +41,8 @@ install:
 	# --- Executables et bibliotheque partagee -----------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(libdir)
 	$(INSTALL_DATA) lib/blocker-common.sh        $(DESTDIR)$(libdir)/blocker-common.sh
+	$(INSTALL_DATA) lib/blocker-os.sh            $(DESTDIR)$(libdir)/blocker-os.sh
+	$(INSTALL_DATA) lib/blocker-i18n.sh          $(DESTDIR)$(libdir)/blocker-i18n.sh
 	$(INSTALL_PROG) bin/blocker-configure        $(DESTDIR)$(libdir)/blocker-configure
 	$(INSTALL_PROG) bin/blocker-guard            $(DESTDIR)$(libdir)/blocker-guard
 	$(INSTALL_PROG) bin/blocker-resolver-run     $(DESTDIR)$(libdir)/blocker-resolver-run
@@ -44,6 +53,7 @@ install:
 	$(INSTALL_PROG) bin/blocker-doh-refresh     $(DESTDIR)$(libdir)/blocker-doh-refresh
 	$(INSTALL_PROG) bin/blocker-apply-policies   $(DESTDIR)$(libdir)/blocker-apply-policies
 	$(INSTALL_PROG) bin/blocker-apply-nftables   $(DESTDIR)$(libdir)/blocker-apply-nftables
+	$(INSTALL_PROG) bin/blocker-base-rules       $(DESTDIR)$(libdir)/blocker-base-rules
 
 	# --- Script de desinstallation, dans le PATH de root ------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sbindir)
@@ -60,6 +70,8 @@ install:
 	$(INSTALL_DATA) systemd/blocker-selfheal.timer       $(DESTDIR)$(unitdir)/
 	$(INSTALL_DATA) systemd/blocker-list-update.service  $(DESTDIR)$(unitdir)/
 	$(INSTALL_DATA) systemd/blocker-list-update.timer    $(DESTDIR)$(unitdir)/
+	$(INSTALL_DATA) systemd/blocker-policies.path        $(DESTDIR)$(unitdir)/
+	$(INSTALL_DATA) systemd/blocker-policies.service     $(DESTDIR)$(unitdir)/
 
 	# --- Modeles de configuration -----------------------------------------
 	# Les fichiers reels dans /etc sont poses par blocker-configure, pas par
@@ -80,6 +92,8 @@ install:
 		$(DESTDIR)$(sharedir)/conf/audit-blocker-adulte.rules
 	$(INSTALL_DATA) share/conf/blocker.conf \
 		$(DESTDIR)$(sharedir)/conf/blocker.conf
+	$(INSTALL_DATA) pacman/95-blocker-adulte.hook \
+		$(DESTDIR)$(sharedir)/conf/pacman-95-blocker-adulte.hook
 
 	# --- Modeles de policies navigateur ------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/policies
@@ -92,12 +106,26 @@ install:
 	$(INSTALL_DATA) etc/brave-policies/blocker-adulte.json \
 		$(DESTDIR)$(sharedir)/policies/brave-policies.json
 
-	# --- Hooks initramfs (modeles ; poses dans /etc par blocker-configure) --
+	# --- Hooks initramfs (modeles ; poses par blocker-configure) ------------
+	# Trois generateurs d'images selon la distribution : initramfs-tools
+	# (Debian, Ubuntu), dracut (Fedora, RHEL, openSUSE), mkinitcpio (Arch).
+	# Les trois embarquent les memes deux fichiers, produits par les memes deux
+	# scripts ; seuls les points d'accroche different.
 	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/initramfs
 	$(INSTALL_PROG) initramfs-hook/blocker-adulte-hook \
 		$(DESTDIR)$(sharedir)/initramfs/blocker-adulte-hook
 	$(INSTALL_PROG) initramfs-hook/blocker-adulte-init-bottom \
 		$(DESTDIR)$(sharedir)/initramfs/blocker-adulte-init-bottom
+	$(INSTALL_PROG) initramfs-hook/blocker-load-rules \
+		$(DESTDIR)$(sharedir)/initramfs/blocker-load-rules
+	$(INSTALL_PROG) dracut/module-setup.sh \
+		$(DESTDIR)$(sharedir)/initramfs/dracut-module-setup.sh
+	$(INSTALL_PROG) dracut/blocker-adulte-prepivot.sh \
+		$(DESTDIR)$(sharedir)/initramfs/dracut-blocker-adulte-prepivot.sh
+	$(INSTALL_PROG) mkinitcpio/blocker-adulte-install \
+		$(DESTDIR)$(sharedir)/initramfs/mkinitcpio-blocker-adulte-install
+	$(INSTALL_PROG) mkinitcpio/blocker-adulte-hook \
+		$(DESTDIR)$(sharedir)/initramfs/mkinitcpio-blocker-adulte-hook
 
 	# --- Liste de blocage de base ------------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/blocklists
@@ -114,6 +142,8 @@ install:
 	$(INSTALL_PROG) tests/test_no_hidden_files.sh       $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/test_safesearch.sh           $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/test_uninstall_phases.sh     $(DESTDIR)$(sharedir)/tests/
+	$(INSTALL_PROG) tests/test_portabilite.sh           $(DESTDIR)$(sharedir)/tests/
+	$(INSTALL_PROG) tests/test_i18n.sh                  $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/run_all.sh                    $(DESTDIR)$(sharedir)/tests/
 
 	# --- Documentation ------------------------------------------------------
@@ -121,6 +151,7 @@ install:
 	# etre installe sur la machine, pas seulement present dans le depot.
 	$(INSTALL_DIR) $(DESTDIR)$(docdir)
 	$(INSTALL_DATA) README.md $(DESTDIR)$(docdir)/README.md
+	$(INSTALL_DATA) README.en.md $(DESTDIR)$(docdir)/README.en.md
 
 uninstall:
 	@echo "Ne pas utiliser « make uninstall »."
@@ -146,7 +177,12 @@ check:
 			etc/NetworkManager/dispatcher.d/90-blocker-adulte \
 			|| erreurs=1; \
 		shellcheck -S warning -e SC2034 -s sh \
-			initramfs-hook/* debian/postinst debian/prerm debian/postrm \
+			initramfs-hook/* dracut/blocker-adulte-prepivot.sh \
+			mkinitcpio/blocker-adulte-hook \
+			debian/postinst debian/prerm debian/postrm \
+			|| erreurs=1; \
+		shellcheck -S warning -e SC2034,SC2154,SC2148 \
+			dracut/module-setup.sh mkinitcpio/blocker-adulte-install \
 			|| erreurs=1; \
 	else \
 		echo "shellcheck absent : analyse statique ignoree (apt install shellcheck)."; \

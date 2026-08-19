@@ -73,7 +73,7 @@ while IFS='|' read -r dir filename family; do
 
     src="$(blocker_policy_source "${family}")" || continue
     if [ ! -r "${src}" ]; then
-        blocker_err "modele de policy manquant pour ${family} : ${src}"
+        blocker_err "$(m "modele de policy manquant pour" "policy template missing for") ${family} : ${src}"
         continue
     fi
 
@@ -83,22 +83,23 @@ while IFS='|' read -r dir filename family; do
 
     if blocker_install_protected "${src}" "${dst}" 0644; then
         if [ "${before}" = "absent" ]; then
-            blocker_repair "policy ${family} deployee : ${dst}"
+            blocker_repair "$(m "policy" "policy") ${family} $(m "deployee" "deployed") : ${dst}"
         fi
         deployed=$((deployed + 1))
     else
-        blocker_err "echec du deploiement de la policy ${family} vers ${dst}"
+        blocker_err "$(m "echec du deploiement de la policy" "failed to deploy the policy") ${family} -> ${dst}"
     fi
 done < <(blocker_browser_targets)
 
-blocker_info "policies navigateur : ${deployed} en place, ${skipped} navigateur(s) absent(s) ignore(s)"
+blocker_info "$(m "policies navigateur" "browser policies") : ${deployed} $(m "en place" "in place"), ${skipped} $(m "navigateur(s) absent(s) ignore(s)" "absent browser(s) skipped")"
 
 # Rappel visible : les snaps Firefox et Chromium lisent bien /etc/firefox/policies
 # et /etc/chromium/policies, mais uniquement depuis les versions livrees a partir
 # de 2023. Sur une version plus ancienne, la policy est ignoree silencieusement
 # par le navigateur — d'ou cette verification explicite.
 if browser_present firefox && [ -d /snap/firefox ]; then
-    blocker_info "Firefox est installe en snap : verifier about:policies apres le premier lancement"
+    blocker_info "$(m "Firefox est installe en snap : verifier about:policies apres le premier lancement" \
+                  "Firefox is installed as a snap: check about:policies after the first launch")"
 fi
 
 exit 0

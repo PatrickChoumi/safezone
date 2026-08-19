@@ -64,7 +64,7 @@ while IFS= read -r url; do
     converti="${WORK}/$(printf '%02d' "${index}")-liste.conf"
 
     if ! telecharger "${url}" "${brut}"; then
-        blocker_warn "telechargement echoue, liste ignoree : ${url}"
+        blocker_warn "$(m "telechargement echoue, liste ignoree" "download failed, list skipped") : ${url}"
         index=$((index + 1))
         continue
     fi
@@ -75,19 +75,20 @@ while IFS= read -r url; do
     # Garde-fou : une liste vide ou minuscule signale une page d'erreur HTML
     # renvoyee avec un code 200, pas une vraie liste.
     if [ "${lignes}" -lt 100 ]; then
-        blocker_warn "liste suspecte (${lignes} entrees seulement), ignoree : ${url}"
+        blocker_warn "$(m "liste suspecte" "suspicious list") (${lignes} $(m "entrees seulement" "entries only")), $(m "ignoree" "skipped") : ${url}"
         index=$((index + 1))
         continue
     fi
 
-    blocker_info "liste recuperee : ${lignes} domaines depuis ${url}"
+    blocker_info "$(m "liste recuperee" "list fetched") : ${lignes} $(m "domaines depuis" "domains from") ${url}"
     fichiers_ok+=("${converti}")
     total=$((total + lignes))
     index=$((index + 1))
 done <<< "${BLOCKER_LIST_URLS}"
 
 if [ "${#fichiers_ok[@]}" -eq 0 ]; then
-    blocker_warn "aucune liste telechargee, les listes en place sont conservees"
+    blocker_warn "$(m "aucune liste telechargee, les listes en place sont conservees" \
+                  "no list downloaded, the lists already in place are kept")"
     exit 0
 fi
 
@@ -108,7 +109,8 @@ sed "s#^conf-dir=.*#conf-dir=${CANDIDAT},*.conf#" \
     /etc/dnsmasq.d/blocker-adulte.conf > "${TEST_CONF}"
 
 if ! dnsmasq --test --conf-file="${TEST_CONF}" >/dev/null 2>&1; then
-    blocker_err "les listes telechargees produisent une configuration dnsmasq invalide, mise a jour abandonnee"
+    blocker_err "$(m "les listes telechargees produisent une configuration dnsmasq invalide, mise a jour abandonnee" \
+                 "the downloaded lists produce an invalid dnsmasq configuration, update aborted")"
     dnsmasq --test --conf-file="${TEST_CONF}" >&2 || true
     exit 1
 fi
@@ -123,14 +125,15 @@ for f in "${CANDIDAT}"/[1-9][0-9]-*.conf; do
     install -m 0644 "${f}" "${DEST}/$(basename "${f}")"
 done
 
-blocker_info "listes de blocage mises a jour : ${total} domaines au total dans ${DEST}"
+blocker_info "$(m "listes de blocage mises a jour" "blocklists updated") : ${total} $(m "domaines au total dans" "domains in total in") ${DEST}"
 
 # --- SafeSearch force -------------------------------------------------------
 # Les adresses des hotes « stricts » des moteurs changent : on les rafraichit en
 # meme temps que les listes, dans la meme fenetre reseau.
 if [ -x /usr/lib/blocker-adulte/blocker-safesearch ]; then
     /usr/lib/blocker-adulte/blocker-safesearch || \
-        blocker_warn "rafraichissement SafeSearch en echec, les valeurs en place restent actives"
+        blocker_warn "$(m "rafraichissement SafeSearch en echec, les valeurs en place restent actives" \
+                  "SafeSearch refresh failed, the values already in place stay active")"
 fi
 
 # --- Adresses des resolveurs DoH -------------------------------------------
@@ -138,15 +141,16 @@ fi
 # complete avec ce que les noms resolvent aujourd'hui.
 if [ -x /usr/lib/blocker-adulte/blocker-doh-refresh ]; then
     /usr/lib/blocker-adulte/blocker-doh-refresh || \
-        blocker_warn "rafraichissement des adresses DoH en echec, la liste ecrite en dur reste active"
+        blocker_warn "$(m "rafraichissement des adresses DoH en echec, la liste ecrite en dur reste active" \
+                  "DoH address refresh failed, the hard-coded list stays active")"
 fi
 
 # --- Rechargement du resolveur ---------------------------------------------
 if blocker_unit_active blocker-resolver.service; then
     if systemctl reload-or-restart blocker-resolver.service; then
-        blocker_info "resolveur recharge avec les nouvelles listes"
+        blocker_info "$(m "resolveur recharge avec les nouvelles listes" "resolver reloaded with the new lists")"
     else
-        blocker_err "rechargement du resolveur en echec"
+        blocker_err "$(m "rechargement du resolveur en echec" "reloading the resolver failed")"
     fi
 fi
 

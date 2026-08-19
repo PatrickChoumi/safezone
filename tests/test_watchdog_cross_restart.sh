@@ -100,7 +100,7 @@ fi
 
 # L'action doit etre tracee : un watchdog silencieux est explicitement exclu.
 if journalctl -u blocker-guard.service --since "${DEPART}" --no-pager 2>/dev/null \
-   | grep -q 'REPARATION.*resolver'; then
+   | grep -qE '(REPARATION|REPAIR).*resolver'; then
     ok "la relance est journalisee par blocker-guard (ligne « REPARATION »)"
 else
     ko "aucune ligne « REPARATION » dans le journal de blocker-guard"
@@ -128,7 +128,7 @@ else
 fi
 
 if journalctl -u blocker-resolver.service --since "${DEPART_B}" --no-pager 2>/dev/null \
-   | grep -q 'REPARATION.*guard'; then
+   | grep -qE '(REPARATION|REPAIR).*guard'; then
     ok "la relance est journalisee par blocker-resolver (ligne « REPARATION »)"
 else
     warn "pas de ligne « REPARATION » cote resolveur — blocker-selfheal.timer a pu relancer la garde en premier"

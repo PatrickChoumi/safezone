@@ -20,11 +20,18 @@ step() { blocker_info "== $* =="; }
 # ---------------------------------------------------------------------------
 # 0. Utilisateur systeme
 # ---------------------------------------------------------------------------
-step "utilisateur systeme ${BLOCKER_USER}"
+step "$(m "utilisateur systeme" "system user") ${BLOCKER_USER}"
 if ! getent passwd "${BLOCKER_USER}" >/dev/null 2>&1; then
-    adduser --system --group --no-create-home \
-            --home /nonexistent --quiet "${BLOCKER_USER}"
-    blocker_info "utilisateur systeme ${BLOCKER_USER} cree"
+    # « adduser » est un script Debian ; blocker_user_creer passe par useradd,
+    # qui vient de shadow-utils et existe sur toutes les distributions.
+    if blocker_user_creer "${BLOCKER_USER}"; then
+        blocker_info "$(m "utilisateur systeme" "system user") ${BLOCKER_USER} $(m "cree" "created")"
+    else
+        blocker_err "$(m "creation de l'utilisateur" "cannot create user") ${BLOCKER_USER} $(m "impossible (useradd absent ?)" "(useradd missing?)")"
+        blocker_err "$(m "le resolveur ne pourra pas abandonner ses privileges : arret." \
+                 "the resolver could not drop its privileges: aborting.")"
+        exit 1
+    fi
 fi
 
 install -d -m 0755 "${BLOCKER_STATEDIR}"
@@ -39,30 +46,31 @@ rm -f "${BLOCKER_OPTOUT_FLAG}"
 # pas perdre les reglages de l'utilisateur a chaque mise a jour.
 if [ ! -e "${BLOCKER_CONF}" ]; then
     install -m 0644 "${BLOCKER_SHAREDIR}/conf/blocker.conf" "${BLOCKER_CONF}"
-    blocker_info "configuration locale installee : ${BLOCKER_CONF}"
+    blocker_info "$(m "configuration locale installee" "local configuration installed") : ${BLOCKER_CONF}"
 fi
 
 # ---------------------------------------------------------------------------
 # 1. Liste de blocage de base
 # ---------------------------------------------------------------------------
-step "liste de blocage"
+step "$(m "liste de blocage" "blocklist")"
 if [ ! -s "${BLOCKER_STATEDIR}/blocklists/00-base.conf" ]; then
     install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/00-base.conf" \
                     "${BLOCKER_STATEDIR}/blocklists/00-base.conf"
-    blocker_info "liste de blocage de base installee (fonctionne hors ligne)"
+    blocker_info "$(m "liste de blocage de base installee (fonctionne hors ligne)" \
+                  "base blocklist installed (works offline)")"
 fi
 
 # ---------------------------------------------------------------------------
 # 1 bis. Resolveurs amont, generes depuis blocker.conf
 # ---------------------------------------------------------------------------
-step "resolveurs amont"
+step "$(m "resolveurs amont" "upstream resolvers")"
 /usr/lib/blocker-adulte/blocker-upstream || \
-    blocker_err "generation des resolveurs amont en echec"
+    blocker_err "$(m "generation des resolveurs amont en echec" "generating the upstream resolvers failed")"
 
 # ---------------------------------------------------------------------------
 # 2. Fichiers de configuration proteges
 # ---------------------------------------------------------------------------
-step "fichiers de configuration"
+step "$(m "fichiers de configuration" "configuration files")"
 blocker_install_protected "${BLOCKER_SHAREDIR}/conf/dnsmasq-blocker-adulte.conf" \
                           "/etc/dnsmasq.d/blocker-adulte.conf"
 blocker_install_protected "${BLOCKER_SHAREDIR}/conf/nftables-blocker-adulte.nft" \
@@ -77,9 +85,14 @@ blocker_install_protected "${BLOCKER_SHAREDIR}/conf/90-blocker-adulte" \
 # ---------------------------------------------------------------------------
 # 3. Inclusion dans /etc/nftables.conf (persistance au boot)
 # ---------------------------------------------------------------------------
-step "persistance nftables"
-NFT_MAIN="/etc/nftables.conf"
+step "$(m "persistance nftables" "nftables persistence")"
+# Debian et Arch chargent /etc/nftables.conf, Fedora et RHEL
+# /etc/sysconfig/nftables.conf. blocker_nft_persist_file lit la ligne ExecStart
+# de nftables.service plutot que de trancher a notre place.
+NFT_MAIN="$(blocker_nft_persist_file)"
 NFT_INCLUDE='include "/etc/nftables/blocker-adulte.nft"'
+blocker_info "$(m "fichier de persistance nftables" "nftables persistence file") : ${NFT_MAIN}"
+install -d -m 0755 "$(dirname "${NFT_MAIN}")"
 
 if [ ! -e "${NFT_MAIN}" ]; then
     cat > "${NFT_MAIN}" <<'EOF'
@@ -88,54 +101,122 @@ if [ ! -e "${NFT_MAIN}" ]; then
 # pas de « flush ruleset » afin de ne pas effacer d'autres regles de pare-feu.
 EOF
     chmod 0755 "${NFT_MAIN}"
-    blocker_info "${NFT_MAIN} cree"
+    blocker_info "${NFT_MAIN} $(m "cree" "created")"
 fi
 
 if ! grep -qF 'blocker-adulte.nft' "${NFT_MAIN}"; then
     printf '\n# blocker-adulte (composant 2) — retirer cette ligne lors de la desinstallation\n%s\n' \
         "${NFT_INCLUDE}" >> "${NFT_MAIN}"
-    blocker_info "ligne d'inclusion ajoutee a ${NFT_MAIN}"
+    blocker_info "$(m "ligne d'inclusion ajoutee a" "include line added to") ${NFT_MAIN}"
 fi
 
 # ---------------------------------------------------------------------------
 # 4. Policies navigateur
 # ---------------------------------------------------------------------------
-step "policies navigateur"
+step "$(m "policies navigateur" "browser policies")"
 /usr/lib/blocker-adulte/blocker-apply-policies || \
-    blocker_warn "deploiement des policies partiellement en echec"
+    blocker_warn "$(m "deploiement des policies partiellement en echec" "browser policy deployment partly failed")"
 
 # ---------------------------------------------------------------------------
 # 5. Regles auditd
 # ---------------------------------------------------------------------------
-step "regles auditd"
+step "$(m "regles auditd" "auditd rules")"
 if [ -d /etc/audit/rules.d ]; then
     install -m 0640 "${BLOCKER_SHAREDIR}/conf/audit-blocker-adulte.rules" \
                     /etc/audit/rules.d/blocker-adulte.rules
     if command -v augenrules >/dev/null 2>&1; then
         augenrules --load >/dev/null 2>&1 || \
-            blocker_warn "augenrules --load a echoue (auditd est-il demarre ?)"
+            blocker_warn "$(m "augenrules --load a echoue (auditd est-il demarre ?)" "augenrules --load failed (is auditd running?)")"
     fi
-    blocker_info "regles auditd installees dans /etc/audit/rules.d/blocker-adulte.rules"
+    blocker_info "$(m "regles auditd installees dans" "auditd rules installed in") /etc/audit/rules.d/blocker-adulte.rules"
 else
-    blocker_warn "auditd absent : composant 8 inactif. Installer le paquet auditd puis relancer ce script."
+    blocker_warn "$(m "auditd absent : composant 8 inactif. Installer le paquet" \
+                  "auditd missing: component 8 inactive. Install the package") $(blocker_pkg_pour_role auditd)"
 fi
 
 # ---------------------------------------------------------------------------
 # 6. Hook initramfs
 # ---------------------------------------------------------------------------
-step "hook initramfs"
-if [ -d /etc/initramfs-tools ]; then
-    install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/blocker-adulte-hook" \
-                    /etc/initramfs-tools/hooks/blocker-adulte
-    install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/blocker-adulte-init-bottom" \
-                    /etc/initramfs-tools/scripts/init-bottom/blocker-adulte
-    if command -v update-initramfs >/dev/null 2>&1; then
-        blocker_info "regeneration de l'initramfs (update-initramfs -u)"
-        update-initramfs -u >/dev/null 2>&1 || \
-            blocker_warn "update-initramfs -u a echoue ; relancer a la main"
-    fi
-else
-    blocker_warn "initramfs-tools absent : composant 4 inactif"
+step "$(m "hook initramfs" "initramfs hook") (${BLOCKER_INITRAMFS})"
+INITRAMFS_POSE=0
+
+case "${BLOCKER_INITRAMFS}" in
+    initramfs-tools)
+        install -d -m 0755 /etc/initramfs-tools/hooks \
+                           /etc/initramfs-tools/scripts/init-bottom
+        install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/blocker-adulte-hook" \
+                        /etc/initramfs-tools/hooks/blocker-adulte
+        install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/blocker-adulte-init-bottom" \
+                        /etc/initramfs-tools/scripts/init-bottom/blocker-adulte
+        INITRAMFS_POSE=1
+        ;;
+
+    dracut)
+        # Un module dracut est un simple repertoire depose : rien d'autre a
+        # configurer, dracut le decouvre seul et son check() decide de
+        # l'inclure. Aucun fichier appartenant a une autre paquet n'est touche.
+        DRACUT_MOD=/usr/lib/dracut/modules.d/99blocker-adulte
+        install -d -m 0755 "${DRACUT_MOD}"
+        install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/dracut-module-setup.sh" \
+                        "${DRACUT_MOD}/module-setup.sh"
+        install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/dracut-blocker-adulte-prepivot.sh" \
+                        "${DRACUT_MOD}/blocker-adulte-prepivot.sh"
+        INITRAMFS_POSE=1
+        ;;
+
+    mkinitcpio)
+        install -d -m 0755 /etc/initcpio/install /etc/initcpio/hooks
+        install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/mkinitcpio-blocker-adulte-install" \
+                        /etc/initcpio/install/blocker-adulte
+        install -m 0755 "${BLOCKER_SHAREDIR}/initramfs/mkinitcpio-blocker-adulte-hook" \
+                        /etc/initcpio/hooks/blocker-adulte
+
+        # mkinitcpio n'execute que les hooks listes dans HOOKS : deposer les
+        # fichiers ne suffit pas. Mais une ligne HOOKS erronee empeche la
+        # machine de demarrer — on ne modifie donc ce fichier que si
+        # l'utilisateur l'a demande, et on revient en arriere si la
+        # reconstruction echoue.
+        MKCONF=/etc/mkinitcpio.conf
+        if grep -qE '^HOOKS=.*\bblocker-adulte\b' "${MKCONF}" 2>/dev/null; then
+            INITRAMFS_POSE=1
+        elif [ "${BLOCKER_MKINITCPIO_HOOK:-non}" = "oui" ] && [ -w "${MKCONF}" ]; then
+            cp -a "${MKCONF}" "${MKCONF}.avant-blocker-adulte"
+            sed -i -E 's/^(HOOKS=\(.*)\)[[:space:]]*$/\1 blocker-adulte)/' "${MKCONF}"
+            if grep -qE '^HOOKS=.*\bblocker-adulte\b' "${MKCONF}"; then
+                blocker_info "$(m "hook ajoute a HOOKS dans" "hook added to HOOKS in") ${MKCONF} ($(m "sauvegarde" "backup") : ${MKCONF}.avant-blocker-adulte)"
+                if mkinitcpio -P >/dev/null 2>&1; then
+                    INITRAMFS_POSE=1
+                else
+                    cp -a "${MKCONF}.avant-blocker-adulte" "${MKCONF}"
+                    mkinitcpio -P >/dev/null 2>&1 || true
+                    blocker_err "$(m "mkinitcpio -P a echoue" "mkinitcpio -P failed") : ${MKCONF} $(m "restaure, composant 4 inactif" "restored, component 4 inactive")"
+                fi
+            else
+                cp -a "${MKCONF}.avant-blocker-adulte" "${MKCONF}"
+                blocker_warn "$(m "ligne HOOKS non reconnue dans" "HOOKS line not recognised in") ${MKCONF}, $(m "fichier restaure tel quel" "file restored unchanged")"
+            fi
+        else
+            blocker_warn "$(m "composant 4 en attente : ajouter « blocker-adulte » a HOOKS dans" \
+                  "component 4 pending: add « blocker-adulte » to HOOKS in") ${MKCONF},"
+            blocker_warn "$(m "puis « sudo mkinitcpio -P ». Automatisable par" \
+                  "then « sudo mkinitcpio -P ». Can be automated with") BLOCKER_MKINITCPIO_HOOK=\"oui\"."
+        fi
+        ;;
+
+    *)
+        blocker_warn "$(m "aucun generateur d'initramfs reconnu : composant 4 inactif" \
+                  "no initramfs generator recognised: component 4 inactive")"
+        blocker_warn "$(m "supportes" "supported") : initramfs-tools, dracut, mkinitcpio"
+        ;;
+esac
+
+# La reconstruction de l'image a deja eu lieu pour mkinitcpio (elle fait partie
+# de la validation du retour arriere) : on ne la refait pas.
+if [ "${INITRAMFS_POSE}" -eq 1 ] && [ "${BLOCKER_INITRAMFS}" != "mkinitcpio" ]; then
+    blocker_info "$(m "regeneration de l'initramfs" "rebuilding the initramfs") (${BLOCKER_INITRAMFS})"
+    blocker_initramfs_rebuild >/dev/null 2>&1 || \
+        blocker_warn "$(m "la regeneration de l'initramfs a echoue ; la relancer a la main" \
+                  "rebuilding the initramfs failed; run it again by hand")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -145,13 +226,13 @@ step "systemd-resolved"
 if systemctl list-unit-files systemd-resolved.service >/dev/null 2>&1; then
     systemctl enable --now systemd-resolved.service >/dev/null 2>&1 || true
     systemctl restart systemd-resolved.service || \
-        blocker_warn "redemarrage de systemd-resolved en echec"
+        blocker_warn "$(m "redemarrage de systemd-resolved en echec" "restarting systemd-resolved failed")"
 fi
 
 # ---------------------------------------------------------------------------
 # 8. Unites systemd du projet
 # ---------------------------------------------------------------------------
-step "unites systemd"
+step "$(m "unites systemd" "systemd units")"
 systemctl daemon-reload
 
 # nftables.service assure le chargement au boot, tot dans la sequence.
@@ -161,24 +242,40 @@ fi
 
 # Ordre volontaire : le resolveur d'abord, la garde ensuite.
 systemctl enable --now blocker-resolver.service || \
-    blocker_err "blocker-resolver.service n'a pas demarre — voir journalctl -u blocker-resolver"
+    blocker_err "$(m "blocker-resolver.service n'a pas demarre" "blocker-resolver.service did not start") — journalctl -u blocker-resolver"
 systemctl enable --now blocker-guard.service || \
-    blocker_err "blocker-guard.service n'a pas demarre — voir journalctl -u blocker-guard"
+    blocker_err "$(m "blocker-guard.service n'a pas demarre" "blocker-guard.service did not start") — journalctl -u blocker-guard"
 systemctl enable --now blocker-selfheal.timer || \
-    blocker_warn "blocker-selfheal.timer non arme"
+    blocker_warn "blocker-selfheal.timer $(m "non arme" "not armed")"
 systemctl enable --now blocker-list-update.timer || \
-    blocker_warn "blocker-list-update.timer non arme"
+    blocker_warn "blocker-list-update.timer $(m "non arme" "not armed")"
+
+# Composant 5, volet portable : surveillance directe des repertoires de
+# policies. Elle couvre les navigateurs installes par snap ou flatpak, que le
+# gestionnaire de paquets ne voit pas, et toutes les distributions ou aucun
+# hook de paquet n'existe.
+systemctl enable --now blocker-policies.path || \
+    blocker_warn "blocker-policies.path $(m "non arme : la reapplication des policies attendra le self-heal" "not armed: policy reapplication will wait for self-heal")"
+
+# Hook du gestionnaire de paquets, la ou il en existe un par simple depot de
+# fichier (pacman). dpkg passe par les triggers du paquet .deb.
+PKG_HOOK="$(blocker_pkg_hook_path)"
+if [ -n "${PKG_HOOK}" ]; then
+    install -d -m 0755 "$(dirname "${PKG_HOOK}")"
+    install -m 0644 "${BLOCKER_SHAREDIR}/conf/pacman-95-blocker-adulte.hook" "${PKG_HOOK}"
+    blocker_info "$(m "hook du gestionnaire de paquets installe" "package-manager hook installed") : ${PKG_HOOK}"
+fi
 
 # ---------------------------------------------------------------------------
 # 9. Regles nftables et immuabilite
 # ---------------------------------------------------------------------------
-step "regles nftables"
+step "$(m "regles nftables" "nftables rules")"
 /usr/lib/blocker-adulte/blocker-apply-nftables --force || \
-    blocker_err "chargement des regles nftables en echec"
+    blocker_err "$(m "chargement des regles nftables en echec" "loading the nftables rules failed")"
 
-step "immuabilite des fichiers proteges"
+step "$(m "immuabilite des fichiers proteges" "immutability of the protected files")"
 blocker_lock_all
 
-blocker_info "configuration terminee. Etat : systemctl status blocker-guard blocker-resolver"
-blocker_info "desinstallation en quatre phases : blocker-uninstall --etat"
+blocker_info "$(m "configuration terminee. Etat" "configuration finished. Status") : systemctl status blocker-guard blocker-resolver"
+blocker_info "$(m "desinstallation en quatre phases" "uninstall in four phases") : blocker-uninstall --etat"
 exit 0

@@ -1,7 +1,13 @@
 # blocker-adulte
 
-Blocage de contenu adulte pour une machine Ubuntu personnelle, **persistant et
+Blocage de contenu adulte pour une machine Linux personnelle, **persistant et
 distribué sur huit composants indépendants**.
+
+Fonctionne sur toute distribution offrant **systemd** et **nftables** :
+Debian, Ubuntu, Fedora, RHEL, Arch, openSUSE, Alpine. Messages en **français ou
+en anglais**, selon la locale. Voir
+[Distributions supportées](#distributions-supportées) et
+[Langue](#langue--français-et-anglais).
 
 L'outil n'est pas conçu pour être impossible à retirer. Il est conçu pour que le
 retrait demande de **savoir ce qu'on fait, où, et dans quel ordre** — ce qui
@@ -24,6 +30,8 @@ blocker-status --sonde      # le vérifier par de vraies requêtes DNS
 
 ## Sommaire
 
+- [Langue : français et anglais](#langue--français-et-anglais)
+- [Distributions supportées](#distributions-supportées)
 - [Philosophie et ligne rouge](#philosophie-et-ligne-rouge)
 - [Les huit composants](#les-huit-composants)
 - [Installation](#installation)
@@ -34,6 +42,158 @@ blocker-status --sonde      # le vérifier par de vraies requêtes DNS
 - [Observer l'outil au travail](#observer-loutil-au-travail)
 - [Limites connues](#limites-connues)
 - [Dépannage](#dépannage)
+
+---
+
+## Langue : français et anglais
+
+Tout ce que l'outil affiche — sorties de commandes, journal, procédure de
+désinstallation — existe en **français et en anglais**. La langue est choisie
+dans cet ordre :
+
+1. `BLOCKER_LANG` dans `/etc/blocker-adulte/blocker.conf` (`fr`, `en`, `auto`) ;
+2. l'environnement : `LC_ALL`, puis `LC_MESSAGES`, puis `LANG` ;
+3. la locale du système, lue dans `/etc/locale.conf` ou `/etc/default/locale` ;
+4. l'anglais.
+
+L'étape 3 compte plus qu'il n'y paraît : **les services systemd démarrent sans
+`LANG`**. Sans elle, le journal parlerait anglais pendant que le terminal parle
+français, sur la même machine.
+
+Forcer une langue :
+
+```bash
+sudo sed -i 's/^BLOCKER_LANG=.*/BLOCKER_LANG="en"/' /etc/blocker-adulte/blocker.conf
+sudo systemctl restart blocker-resolver.service blocker-guard.service
+```
+
+Ou pour une seule commande : `BLOCKER_LANG=en sudo -E blocker-status`.
+
+### Comment la traduction est faite
+
+Les deux textes vivent côte à côte dans le code, par une seule fonction :
+
+```sh
+blocker_info "$(m "resolveur demarre" "resolver started")"
+```
+
+C'est un choix, pas une facilité. Des catalogues à clés, ou gettext, auraient
+ajouté une dépendance de construction et le défaut classique : une clé mal
+orthographiée n'échoue pas, elle affiche du vide. Avec les deux chaînes sur
+place, une traduction manquante se voit en lisant la ligne, et
+`tests/test_i18n.sh` détecte mécaniquement un appel incomplet. La contrepartie —
+deux langues seulement, une troisième demanderait une réécriture — est assumée.
+
+`blocker-uninstall.sh` redéfinit `m` chez lui, en quelques lignes : la phase 3
+supprime `/usr/lib/blocker-adulte`, et la phase 4 s'exécute après. Un
+désinstalleur qui dépendrait d'un fichier qu'il vient d'effacer serait cassé au
+moment où l'on en a le plus besoin.
+
+### Ce qui reste en français
+
+**La suite de tests.** 442 messages d'assertion de plus auraient triplé la
+surface traduite, et cette surface-là est justement celle qui valide tout le
+reste : une erreur de transcription y serait la plus coûteuse. `run_all.sh` le
+dit en une ligne quand la machine n'est pas en français, plutôt que de mélanger
+les deux langues. Les commentaires du code sont également en français.
+
+---
+
+## Distributions supportées
+
+Deux choses sont **obligatoires**, quelle que soit la distribution :
+
+| Exigence | Pourquoi il n'y a pas de contournement |
+|---|---|
+| **systemd** | Les huit composants reposent sur des unités, des timers et le watchdog systemd. Il n'existe pas d'équivalent portable sous OpenRC ou runit, et en fabriquer un serait un autre projet. |
+| **nftables** | Le composant 2 **est** un jeu de règles nftables. iptables-legacy ne sait pas exprimer `meta skuid`, dont dépend l'exemption du résolveur — sans elle, le résolveur se redirige vers lui-même. |
+
+Tout le reste s'adapte. `lib/blocker-os.sh` est le **seul** fichier qui connaît
+les différences ; le reste du projet ne parle plus qu'en **rôles** (« le paquet
+qui fournit `dig` ») et en **actions** (« reconstruire l'initramfs »).
+
+| Famille | Paquets | Initramfs | Hook de paquet | Éprouvé |
+|---|---|---|---|---|
+| Debian, Ubuntu, Mint | `apt` | initramfs-tools | triggers dpkg | **Sur machine réelle** (Ubuntu 26.04) |
+| Fedora, RHEL, Rocky, Alma | `dnf` / `yum` | dracut | unité path systemd | Couche d'adaptation seulement |
+| Arch, Manjaro | `pacman` | mkinitcpio | hook pacman | Couche d'adaptation seulement |
+| openSUSE, SLES | `zypper` | dracut | unité path systemd | Couche d'adaptation seulement |
+| Alpine | `apk` | — | unité path systemd | Couche d'adaptation seulement |
+| Autre | détecté s'il existe | détecté s'il existe | unité path systemd | — |
+
+**Lire la dernière colonne honnêtement.** `tests/test_portabilite.sh` rejoue la
+détection avec l'identité de chaque distribution et vérifie les noms de paquets,
+les chemins et les commandes retenus. Il ne prouve **pas** qu'une installation
+réelle aboutit sur Fedora ou sur Arch : cela ne peut se vérifier que sur la
+machine correspondante. Une distribution non reconnue n'est pas refusée — les
+composants qu'on ne sait pas configurer sont signalés inactifs, le reste marche.
+
+### Noms de paquets, par rôle
+
+Plutôt qu'une table par version de distribution, l'outil garde une liste de
+candidats par rôle et retient le **premier nom que le gestionnaire de paquets
+connaît réellement**. C'est ce qui survit aux renommages (`dnsutils` →
+`bind9-dnsutils` sur Debian, `bind-tools` → `bind` sur Arch) sans maintenance.
+
+| Rôle | Debian | Fedora / RHEL | Arch | openSUSE | Alpine |
+|---|---|---|---|---|---|
+| résolveur | `dnsmasq-base` | `dnsmasq` | `dnsmasq` | `dnsmasq` | `dnsmasq` |
+| pare-feu | `nftables` | `nftables` | `nftables` | `nftables` | `nftables` |
+| stub DNS | `systemd-resolved` | `systemd-resolved` | *(dans systemd)* | `systemd-network` | — |
+| audit | `auditd` | `audit` | `audit` | `audit` | `audit` |
+| `dig` | `bind9-dnsutils`, `dnsutils` | `bind-utils` | `bind`, `bind-tools` | `bind-utils` | `bind-tools` |
+| `chattr` | `e2fsprogs` | `e2fsprogs` | `e2fsprogs` | `e2fsprogs` | `e2fsprogs` |
+
+### Composant 4 : trois générateurs d'initramfs
+
+Les règles nftables sont un **état du noyau**. Chargées depuis l'initramfs,
+elles survivent au `switch_root` et restent actives même en mode recovery, où
+`nftables.service` n'est pas lancé.
+
+Trois générateurs, un seul comportement. Les trois embarquent les **mêmes deux
+fichiers**, produits par les **mêmes deux scripts** ; seuls les points
+d'accroche diffèrent :
+
+| Générateur | Hook de construction | Hook de démarrage | Reconstruction |
+|---|---|---|---|
+| initramfs-tools | `/etc/initramfs-tools/hooks/blocker-adulte` | `scripts/init-bottom/blocker-adulte` | `update-initramfs -u` |
+| dracut | `/usr/lib/dracut/modules.d/99blocker-adulte/module-setup.sh` | hook `pre-pivot` | `dracut --force --regenerate-all` |
+| mkinitcpio | `/etc/initcpio/install/blocker-adulte` | `/etc/initcpio/hooks/blocker-adulte` (`run_latehook`) | `mkinitcpio -P` |
+
+Les deux points d'entrée de dracut et de mkinitcpio ne contiennent **aucun
+`exit`** : leur init les *source*, donc un `exit` arrêterait le démarrage.
+`test_portabilite.sh` le vérifie explicitement — c'est le défaut le plus grave
+possible à cet endroit.
+
+#### Le cas particulier d'Arch
+
+`mkinitcpio` n'exécute que les hooks listés dans `HOOKS=` de
+`/etc/mkinitcpio.conf`. Déposer les fichiers ne suffit pas — mais une ligne
+`HOOKS` erronée empêche la machine de démarrer. `blocker-configure` **ne touche
+donc pas à ce fichier** sans qu'on le lui demande :
+
+```bash
+# /etc/blocker-adulte/blocker.conf
+BLOCKER_MKINITCPIO_HOOK="oui"
+```
+
+Avec ce réglage, le fichier est sauvegardé dans
+`/etc/mkinitcpio.conf.avant-blocker-adulte`, modifié, puis `mkinitcpio -P` est
+lancé. **Si la reconstruction échoue, la sauvegarde est restaurée et l'image
+reconstruite à partir d'elle.** Le composant 4 se déclare alors inactif plutôt
+que de laisser une image non amorçable.
+
+Sans ce réglage, `blocker-status` indique exactement la ligne à ajouter.
+
+### Composant 5 : réaction à la réinstallation d'un navigateur
+
+Seuls dpkg et pacman offrent un point d'accroche par simple dépôt de fichier.
+`dnf` et `zypper` demanderaient un greffon Python, hors de proportion ici.
+Partout — y compris là où un hook existe — une **unité `path` systemd**
+(`blocker-policies.path`) surveille directement les répertoires de policies :
+elle réagit en une seconde au lieu de cinq minutes, et couvre en plus les
+navigateurs installés par snap ou flatpak, que le gestionnaire de paquets ne
+voit pas.
 
 ---
 
@@ -56,7 +216,7 @@ Ces règles sont tenues dans tout le code, et vérifiées par
 | Se recopier vers des emplacements non documentés | Le [manifeste](#manifeste--tous-les-emplacements) ci-dessous liste **tous** les emplacements. Le test n°7 cherche activement des copies ailleurs. |
 | Contrer une suppression volontaire | Un drapeau de retrait volontaire met les watchdogs en veille dès la première étape de la désinstallation. Voir [ci-dessous](#le-drapeau-de-retrait-volontaire). |
 | Toucher au bootloader ou au firmware | Le hook initramfs n'ajoute que des fichiers à l'image initramfs. Aucune référence à GRUB, systemd-boot, `efibootmgr` ou `/sys/firmware` : vérifié par le test n°6 de `test_recovery_mode_hook.sh`. |
-| Réparer en silence | Chaque correction automatique est journalisée avec le préfixe `REPARATION:` dans `journalctl`. |
+| Réparer en silence | Chaque correction automatique est journalisée avec le préfixe `REPARATION:` (ou `REPAIR:` en anglais) dans `journalctl`. |
 
 ### Le drapeau de retrait volontaire
 
@@ -88,7 +248,7 @@ l'utilisateur qui l'annonce, et l'outil s'écarte.
 | 2 | **Application réseau forcée** | `systemd-resolved` → `127.0.0.1`, DNAT nftables du port 53, rejet DoT/DoQ/DoH, dispatcher NetworkManager | 4, 6, 7 |
 | 3 | **Policies navigateur** | Un fichier indépendant par navigateur détecté (Firefox, Chrome, Chromium, Brave) | 5, 6, 7 |
 | 4 | **Hook initramfs** | Règles nftables de base chargées avant le montage de la racine, actives en mode recovery | — (regénéré à l'installation) |
-| 5 | **Hooks dpkg/apt** | `postinst` + triggers dpkg : réinstaller un navigateur ne perd pas sa policy | 7 |
+| 5 | **Réaction à la réinstallation** | Triggers dpkg, hook pacman, et une unité `path` systemd qui surveille les répertoires de policies | 7 |
 | 6 | **Deux services à surveillance croisée** | `blocker-resolver.service` ↔ `blocker-guard.service`, chacun relance l'autre | l'un l'autre, et 7 |
 | 7 | **Timer de self-heal** | Passe complète toutes les 5 min : `chattr +i`, policies, règles nftables, services | systemd |
 | 8 | **Journalisation auditd** | Trace toute écriture sur les fichiers protégés | — (n'empêche rien, enregistre) |
@@ -311,8 +471,9 @@ cd safezone
 sudo ./install.sh
 ```
 
-`install.sh` installe les dépendances manquantes (`dnsmasq-base`, `nftables`,
-`systemd-resolved`, `auditd`, `bind9-dnsutils`, `initramfs-tools`), pose les fichiers,
+`install.sh` détecte la distribution, installe les dépendances manquantes avec
+le bon gestionnaire de paquets (voir
+[Noms de paquets, par rôle](#noms-de-paquets-par-rôle)), pose les fichiers,
 active les huit composants et lance la première mise à jour des listes.
 Comptez deux à trois minutes, dont `update-initramfs`.
 
@@ -427,6 +588,9 @@ existe sans être déclaré ici.
 ```text
 # --- Exécutables et bibliothèque partagée ---
 /usr/lib/blocker-adulte/blocker-common.sh
+/usr/lib/blocker-adulte/blocker-os.sh
+/usr/lib/blocker-adulte/blocker-i18n.sh
+/usr/lib/blocker-adulte/blocker-base-rules
 /usr/lib/blocker-adulte/blocker-configure
 /usr/lib/blocker-adulte/blocker-guard
 /usr/lib/blocker-adulte/blocker-resolver-run
@@ -447,12 +611,18 @@ existe sans être déclaré ici.
 /usr/share/doc/blocker-adulte
 
 # --- Unités systemd ---
-/lib/systemd/system/blocker-resolver.service
-/lib/systemd/system/blocker-guard.service
-/lib/systemd/system/blocker-selfheal.service
-/lib/systemd/system/blocker-selfheal.timer
-/lib/systemd/system/blocker-list-update.service
-/lib/systemd/system/blocker-list-update.timer
+# Le répertoire dépend de la distribution : /usr/lib/systemd/system sur toute
+# distribution usr-merge (toutes les récentes), /lib/systemd/system sur les
+# plus anciennes. Les deux chemins désignent le même fichier là où /lib est un
+# lien ; le test accepte l'un ou l'autre.
+/usr/lib/systemd/system/blocker-resolver.service
+/usr/lib/systemd/system/blocker-guard.service
+/usr/lib/systemd/system/blocker-selfheal.service
+/usr/lib/systemd/system/blocker-selfheal.timer
+/usr/lib/systemd/system/blocker-list-update.service
+/usr/lib/systemd/system/blocker-list-update.timer
+/usr/lib/systemd/system/blocker-policies.path
+/usr/lib/systemd/system/blocker-policies.service
 
 # --- Configuration ---
 /etc/blocker-adulte
@@ -463,9 +633,18 @@ existe sans être déclaré ici.
 /etc/NetworkManager/dispatcher.d/90-blocker-adulte
 /etc/audit/rules.d/blocker-adulte.rules
 
-# --- Hooks initramfs ---
+# --- Hooks initramfs (un seul jeu selon le générateur de la distribution) ---
+# initramfs-tools : Debian, Ubuntu
 /etc/initramfs-tools/hooks/blocker-adulte
 /etc/initramfs-tools/scripts/init-bottom/blocker-adulte
+# dracut : Fedora, RHEL, openSUSE
+/usr/lib/dracut/modules.d/99blocker-adulte
+# mkinitcpio : Arch
+/etc/initcpio/install/blocker-adulte
+/etc/initcpio/hooks/blocker-adulte
+
+# --- Hook du gestionnaire de paquets (Arch uniquement) ---
+/etc/pacman.d/hooks/95-blocker-adulte.hook
 
 # --- Policies navigateur (présentes seulement si le navigateur l'est) ---
 /etc/firefox/policies/policies.json
@@ -666,6 +845,8 @@ sudo tests/run_all.sh --tout   # y compris l'arrêt réel des services
 | `test_browser_reinstall.sh` | n°2 — la policy revient après une réinstallation de navigateur |
 | `test_recovery_mode_hook.sh` | n°3 — l'image initramfs contient bien règles, binaire et modules |
 | `test_no_hidden_files.sh` | n°4 et n°6 — manifeste complet, rien de caché |
+| `test_portabilite.sh` | la couche d'adaptation est juste pour chaque famille supportée |
+| `test_i18n.sh` | les deux langues, aucun appel de traduction incomplet |
 | `test_safesearch.sh` | SafeSearch effectif **et** Gmail/Drive/Agenda non cassés |
 | `test_uninstall_phases.sh` | Retrait pénible (pas de raccourci, jeton non rejouable) **et** sans piège |
 

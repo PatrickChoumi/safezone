@@ -1,0 +1,17 @@
+[Unit]
+Description=blocker-adulte — reapplication des policies navigateur
+Documentation=file:/usr/share/doc/blocker-adulte/README.md
+
+# Declenchee par blocker-policies.path. Le script est idempotent : il ne reecrit
+# que ce qui differe du modele, donc la reecriture ne redeclenche pas l'unite en
+# boucle. Le garde-fou StartLimit ci-dessous couvre malgre tout le cas ou un
+# autre logiciel reecrirait le meme fichier en continu.
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/blocker-adulte/blocker-apply-policies
+# Une policy que l'on ne peut pas poser est journalisee par le script lui-meme ;
+# faire echouer l'unite n'apporterait rien et polluerait « systemctl --failed ».
+SuccessExitStatus=0 1

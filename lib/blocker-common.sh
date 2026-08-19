@@ -32,10 +32,42 @@ BLOCKER_SAFESEARCH="oui"              # forcer le SafeSearch des moteurs : oui/n
 BLOCKER_BLOCK_TUNNELS="oui"           # bloquer Tor et les protocoles VPN : oui/non
 BLOCKER_LIST_URLS="https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
 https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/doh-vpn-proxy-bypass.txt"
+# Une valeur passee dans l'environnement doit survivre au chargement de
+# blocker.conf : « BLOCKER_LANG=en sudo -E blocker-status » est documente, et
+# blocker.conf contient « auto » par defaut — sans cette precaution, le fichier
+# ecraserait le choix ponctuel de l'utilisateur a chaque fois.
+_BLOCKER_LANG_ENV="${BLOCKER_LANG:-}"
+BLOCKER_LANG="auto"                   # langue des messages : auto / fr / en
+BLOCKER_MKINITCPIO_HOOK="non"         # cf. blocker-os.sh, composant 4 sous Arch
 
 if [ -r "${BLOCKER_CONF}" ]; then
     # shellcheck disable=SC1090
     . "${BLOCKER_CONF}"
+fi
+
+# blocker.conf ne l'emporte que s'il nomme une langue ; « auto » laisse la main
+# a l'environnement, puis a la locale du systeme.
+case "${BLOCKER_LANG:-auto}" in
+    auto|"") [ -n "${_BLOCKER_LANG_ENV}" ] && BLOCKER_LANG="${_BLOCKER_LANG_ENV}" ;;
+esac
+
+# Adaptation a la distribution et messages traduits. Les deux fichiers sont
+# charges apres blocker.conf : ils lisent BLOCKER_LANG, que l'utilisateur peut
+# y avoir fixe. Ils sont facultatifs — une installation partielle doit encore
+# pouvoir se desinstaller, ce qui interdit de faire echouer le chargement de
+# cette bibliotheque parce qu'un fichier annexe manque.
+if [ -r "${BLOCKER_LIBDIR}/blocker-os.sh" ]; then
+    # shellcheck source=lib/blocker-os.sh
+    . "${BLOCKER_LIBDIR}/blocker-os.sh"
+fi
+if [ -r "${BLOCKER_LIBDIR}/blocker-i18n.sh" ]; then
+    # shellcheck source=lib/blocker-i18n.sh
+    . "${BLOCKER_LIBDIR}/blocker-i18n.sh"
+else
+    # Repli : sans le fichier de traduction, on parle francais. Le script ne
+    # doit pas s'arreter sur une commande introuvable.
+    m() { printf '%s' "$1"; }
+    BLOCKER_LANGUE="fr"
 fi
 
 # ---------------------------------------------------------------------------
@@ -61,7 +93,9 @@ blocker_err()    { _blocker_emit err "$*"; }
 
 # Toute action corrective passe par ici : une reparation automatique est
 # toujours tracee, jamais silencieuse (exigence de la ligne rouge).
-blocker_repair() { _blocker_emit notice "REPARATION: $*"; }
+# Le mot-cle est traduit lui aussi : c'est ce que l'utilisateur cherchera dans
+# « journalctl | grep ». Les tests acceptent les deux formes.
+blocker_repair() { _blocker_emit notice "$(m REPARATION REPAIR): $*"; }
 
 # ---------------------------------------------------------------------------
 # Retrait volontaire

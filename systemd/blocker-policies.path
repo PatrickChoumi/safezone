@@ -1,0 +1,28 @@
+[Unit]
+Description=blocker-adulte — surveillance des repertoires de policies navigateur
+Documentation=file:/usr/share/doc/blocker-adulte/README.md
+
+# Composant 5, implementation portable.
+#
+# Les triggers dpkg (Debian) et le hook pacman (Arch) ne couvrent que les
+# navigateurs installes par le gestionnaire de paquets de la distribution.
+# Cette unite couvre tous les cas d'un coup : reinstallation par apt, dnf,
+# zypper, snap ou flatpak, et suppression manuelle du fichier de policy.
+#
+# Elle ne remplace pas blocker-selfheal.timer : le timer verifie l'ensemble des
+# huit composants toutes les cinq minutes, celle-ci ne surveille que les
+# policies, mais elle reagit en une seconde au lieu de cinq minutes.
+#
+# Un repertoire absent n'est pas une erreur : systemd surveille alors le
+# repertoire parent existant le plus proche et se declenche a sa creation.
+
+[Path]
+PathChanged=/etc/firefox/policies
+PathChanged=/etc/chromium/policies/managed
+PathChanged=/etc/opt/chrome/policies/managed
+PathChanged=/etc/opt/chromium/policies/managed
+PathChanged=/etc/brave/policies/managed
+Unit=blocker-policies.service
+
+[Install]
+WantedBy=multi-user.target

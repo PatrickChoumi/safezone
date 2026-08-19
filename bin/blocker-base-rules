@@ -1,0 +1,71 @@
+#!/bin/sh
+# blocker-adulte — jeu de regles nftables « de base » (composant 4)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-base-rules
+#
+# Ecrit sur la sortie standard le jeu de regles embarque dans l'image
+# initramfs. Les trois generateurs d'images supportes — initramfs-tools
+# (Debian, Ubuntu), dracut (Fedora, RHEL, openSUSE) et mkinitcpio (Arch) —
+# appellent tous ce script : la regle n'existe qu'a un seul endroit et ne peut
+# donc pas diverger d'une distribution a l'autre.
+#
+# POURQUOI UN JEU DE REGLES SEPARE
+#
+# Les regles completes de /etc/nftables/blocker-adulte.nft designent le
+# resolveur par « meta skuid "blocker-adulte" ». Ce nom se resout via la base
+# utilisateurs, qui n'existe pas dans l'initramfs : on inscrit donc l'UID
+# numerique, lu sur le systeme en fonctionnement au moment ou l'image est
+# construite.
+#
+# La table porte un suffixe « _base » distinct de celle du systeme complet.
+# Les deux coexistent sans se marcher dessus, et « nft list ruleset » montre
+# d'ou vient chaque regle.
+#
+# Ecrit en sh POSIX, sans dependance : il est appele depuis des contextes
+# volontairement pauvres (hook dracut, fonction build() de mkinitcpio).
+
+set -u
+
+UID_BLOCKER="$(getent passwd blocker-adulte 2>/dev/null | cut -d: -f3)"
+
+if [ -z "${UID_BLOCKER}" ]; then
+    echo "blocker-base-rules: utilisateur systeme blocker-adulte absent." >&2
+    echo "blocker-base-rules: lancer /usr/lib/blocker-adulte/blocker-configure d'abord." >&2
+    exit 1
+fi
+
+cat <<EOF
+#!/sbin/nft -f
+# blocker-adulte — regles de base chargees depuis l'initramfs (composant 4).
+# Generees par /usr/lib/blocker-adulte/blocker-base-rules
+# le $(date -u '+%Y-%m-%d %H:%M:%S UTC').
+#
+# UID de l'utilisateur systeme blocker-adulte au moment de la generation :
+# ${UID_BLOCKER}. S'il change (utilisateur recree), reconstruire l'image :
+#   sudo /usr/lib/blocker-adulte/blocker-configure
+
+table ip blocker_adulte_base_nat
+delete table ip blocker_adulte_base_nat
+table ip blocker_adulte_base_nat {
+    chain output {
+        type nat hook output priority dstnat; policy accept;
+        meta skuid ${UID_BLOCKER} return
+        ip daddr 127.0.0.0/8 return
+        meta l4proto { tcp, udp } th dport 53 redirect to :53
+    }
+}
+
+table inet blocker_adulte_base
+delete table inet blocker_adulte_base
+table inet blocker_adulte_base {
+    chain output {
+        type filter hook output priority filter; policy accept;
+        meta skuid ${UID_BLOCKER} accept
+        ip daddr 127.0.0.0/8 accept
+        ip6 daddr ::1 accept
+        tcp dport 853 reject with tcp reset
+        udp dport 853 drop
+        udp dport { 784, 8853 } drop
+    }
+}
+EOF

@@ -101,21 +101,60 @@ reappliquer() {
     return 0
 }
 
-titre "2. Les triggers dpkg sont bien enregistres"
+titre "2. Reaction a la reinstallation d un navigateur (composant 5)"
 
-if command -v dpkg-query >/dev/null 2>&1 && \
-   dpkg-query -W -f='${Status}' blocker-adulte 2>/dev/null | grep -q 'install ok installed'; then
-    if [ -r /var/lib/dpkg/triggers/File ] && \
-       grep -q 'blocker-adulte' /var/lib/dpkg/triggers/File 2>/dev/null; then
-        ok "les triggers de fichier sont enregistres aupres de dpkg"
-        info "$(grep -c 'blocker-adulte' /var/lib/dpkg/triggers/File) chemin(s) surveille(s)"
-    else
-        ko "aucun trigger blocker-adulte enregistre dans /var/lib/dpkg/triggers/File"
-    fi
+# Deux mecanismes complementaires. Le hook du gestionnaire de paquets n'existe
+# que la ou la distribution en offre un par simple depot de fichier — dpkg et
+# pacman. L'unite « path » systemd, elle, existe partout et couvre en plus les
+# navigateurs installes par snap ou flatpak, que le gestionnaire de paquets ne
+# voit pas. Au moins l'un des deux doit etre en place.
+# shellcheck disable=SC1091
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+mecanismes=0
+
+case "${BLOCKER_PKGMGR}" in
+    apt)
+        if command -v dpkg-query >/dev/null 2>&1 && \
+           dpkg-query -W -f='${Status}' blocker-adulte 2>/dev/null | grep -q 'install ok installed'; then
+            if [ -r /var/lib/dpkg/triggers/File ] && \
+               grep -q 'blocker-adulte' /var/lib/dpkg/triggers/File 2>/dev/null; then
+                ok "les triggers de fichier sont enregistres aupres de dpkg"
+                info "$(grep -c 'blocker-adulte' /var/lib/dpkg/triggers/File) chemin(s) surveille(s)"
+                mecanismes=$((mecanismes + 1))
+            else
+                ko "aucun trigger blocker-adulte enregistre dans /var/lib/dpkg/triggers/File"
+            fi
+        else
+            info "paquet .deb non installe (installation via install.sh) :"
+            info "les triggers dpkg ne s appliquent pas."
+        fi ;;
+    pacman)
+        if [ -e /etc/pacman.d/hooks/95-blocker-adulte.hook ]; then
+            ok "le hook pacman est en place"
+            mecanismes=$((mecanismes + 1))
+        else
+            ko "hook pacman absent : /etc/pacman.d/hooks/95-blocker-adulte.hook"
+        fi ;;
+    *)
+        info "${BLOCKER_PKGMGR} n offre pas de hook par depot de fichier ;"
+        info "l unite path systemd est le seul mecanisme, et elle suffit." ;;
+esac
+
+if systemctl is-active --quiet blocker-policies.path 2>/dev/null; then
+    ok "blocker-policies.path surveille les repertoires de policies"
+    mecanismes=$((mecanismes + 1))
+elif [ -d /run/systemd/system ]; then
+    ko "blocker-policies.path n est pas actif"
+    info "l armer : sudo systemctl enable --now blocker-policies.path"
 else
-    warn "paquet .deb non installe (installation via install.sh) :"
-    info "les triggers dpkg du composant 5 sont donc inactifs ;"
-    info "la reapplication repose sur blocker-selfheal.timer (composant 7)."
+    warn "systemd absent, unite path non verifiable"
+fi
+
+if [ "${mecanismes}" -eq 0 ]; then
+    ko "aucun mecanisme de reaction immediate : seul le self-heal repassera (5 min)"
+else
+    ok "${mecanismes} mecanisme(s) de reaction immediate en place"
 fi
 
 titre "3. Suppression d'une policy, puis reapplication automatique"
@@ -161,10 +200,13 @@ fi
 
 titre "4. La reapplication est journalisee"
 
-if journalctl -u blocker-selfheal.service -n 50 --no-pager 2>/dev/null | grep -q 'REPARATION'; then
+# Le mot-cle suit la langue dans laquelle le service tournait quand il a ecrit
+# la ligne, qui n'est pas forcement celle d'aujourd'hui : on cherche les deux.
+if journalctl -u blocker-selfheal.service -n 50 --no-pager 2>/dev/null \
+   | grep -qE 'REPARATION|REPAIR'; then
     ok "la reparation apparait dans le journal"
 else
-    warn "aucune ligne « REPARATION » recente (le script a pu etre lance hors systemd)"
+    warn "aucune ligne « REPARATION » / « REPAIR » recente (le script a pu etre lance hors systemd)"
 fi
 
 titre "5. Le trigger dpkg fonctionne aussi via blocker-apply-policies"

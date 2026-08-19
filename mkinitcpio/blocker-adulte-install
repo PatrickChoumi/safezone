@@ -1,0 +1,69 @@
+#!/bin/bash
+# blocker-adulte — hook de construction mkinitcpio (composant 4, Arch)
+#
+# Installe dans : /etc/initcpio/install/blocker-adulte
+# Actif apres   : ajout de « blocker-adulte » a HOOKS dans /etc/mkinitcpio.conf,
+#                 puis « mkinitcpio -P »
+#
+# Equivalent strict du hook initramfs-tools et du module dracut : memes deux
+# fichiers embarques, produits par les memes deux scripts.
+#
+# Contrairement aux deux autres, ce hook n'est PAS actif du seul fait d'exister :
+# mkinitcpio n'execute que les hooks listes dans HOOKS. blocker-configure ne
+# modifie ce fichier que si BLOCKER_MKINITCPIO_HOOK="oui" dans
+# /etc/blocker-adulte/blocker.conf — une ligne HOOKS erronee empeche la machine
+# de demarrer, ce n'est pas un fichier qu'on edite sans que l'utilisateur l'ait
+# demande.
+
+# shellcheck disable=SC2154  # $BUILDROOT : fourni par mkinitcpio
+
+GEN=/usr/lib/blocker-adulte/blocker-base-rules
+LOADER=/usr/share/blocker-adulte/initramfs/blocker-load-rules
+
+build() {
+    local tmp
+
+    if ! command -v nft >/dev/null 2>&1; then
+        warning "blocker-adulte: nft introuvable, regles de base non embarquees"
+        return 0
+    fi
+    add_binary nft
+    add_binary modprobe
+
+    # La plupart de ces modules sont deja integres au noyau Arch : l'echec de
+    # l'un d'eux ne doit pas faire echouer la construction de l'image.
+    local m
+    for m in nf_tables nft_chain_nat nft_redir nft_reject nft_reject_inet \
+             nf_nat nf_conntrack nf_defrag_ipv4; do
+        add_module "${m}" 2>/dev/null || true
+    done
+
+    if [ ! -x "${GEN}" ] || [ ! -r "${LOADER}" ]; then
+        warning "blocker-adulte: scripts absents, regles de base non embarquees"
+        return 0
+    fi
+
+    tmp="$(mktemp)" || return 0
+    if "${GEN}" > "${tmp}" 2>/dev/null; then
+        add_file "${tmp}" /etc/blocker-adulte/base.nft 644
+    else
+        warning "blocker-adulte: generation des regles de base en echec"
+        warning "blocker-adulte: lancer /usr/lib/blocker-adulte/blocker-configure puis mkinitcpio -P"
+    fi
+    rm -f "${tmp}"
+
+    add_file "${LOADER}" /usr/sbin/blocker-adulte-load-rules 755
+    add_runscript
+}
+
+help() {
+    cat <<'AIDE'
+Charge le jeu de regles nftables de base de blocker-adulte avant le switch_root.
+
+Les regles nftables sont un etat du noyau : chargees depuis l'initramfs, elles
+survivent au switch_root et restent actives meme si la machine demarre en mode
+recovery, ou nftables.service n'est pas lance.
+
+Ce hook ne touche ni au bootloader ni au firmware.
+AIDE
+}
