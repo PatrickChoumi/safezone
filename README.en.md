@@ -373,6 +373,57 @@ sudo blocker-block reddit.com x.com    # block these and all their subdomains
 sudo blocker-block --liste             # show your personal list
 ```
 
+### Unofficial streaming platforms
+
+MovieBox, found on a machine running this tool and **resolving with no
+obstacle at all**. Not a failure of the tool: a blind spot in what public
+blocklists admit.
+
+Every list used here — StevenBlack porn-only, Hagezi NSFW — classifies by
+**dedicated domain**: a domain gets in because that is all the site does. An
+unofficial streaming platform is not one. It is a movie site whose catalogue
+is unrated and whose ad network is not.
+
+Measured against the Hagezi NSFW list of 18/09/2026:
+
+| Platform | Entries in a list of 74,633 adult domains |
+|---|---|
+| `moviebox` | 1 — `moviebox.com`, none of the domains it is actually distributed through |
+| `123movies`, `soap2day`, `hdtoday`, `putlocker` | 0 |
+| `primewire`, `vidsrc`, `streameast`, `netmirror` | 0 |
+
+Two mechanisms answer this, neither replacing the other.
+
+**1. A category list shipped with the package.**
+`/var/lib/blocker-adulte/blocklists/02-plateformes.conf` holds the confirmed
+domains of these platforms, grouped by family: the MovieBox application
+itself, clients of the same kind, pirate streaming sites with adult ad
+networks, and the embedded players that serve those ads. It works offline from
+the moment it is installed, and self-heal puts it back if it disappears.
+
+**2. Pattern blocking, for mirror rotation.**
+These platforms change domain faster than any list updates: the name stays,
+the extension moves — `fmovies.to` becomes `fmovies.co`, then `fmoviesz.to`.
+Enumerating is therefore not enough. `--motif` blocks the **name** rather than
+the domain:
+
+```bash
+sudo blocker-block --motif moviebox   # 2,668 domains covered at once
+sudo blocker-block --motifs           # show active patterns
+sudo blocker-block --retirer-motif moviebox
+```
+
+The name is written across a hundred extensions (`.ng`, `.to`, `.pro`, `.icu`,
+`.sbs`…) and across its numbered and suffixed variants (`moviebox7`,
+`movieboxhd`, `moviebox-pro`), offline, without waiting for a public list to
+notice the new mirror. The generated file lives in `51-motifs.conf`, and
+`blocker-block --motif moviebox.ng` accepts a full domain too — the pattern is
+derived from it.
+
+**What a pattern does not cover, deliberately:** a change of *name*. It follows
+extension rotation, not a platform that rebrands itself. It does not replace
+looking at what actually opens on the machine.
+
 The honest summary: **yes for everyday impulse, no against someone who spends
 five minutes deliberately working around it.** That was the goal.
 

@@ -31,6 +31,7 @@ BLOCKER_LOCK_HOSTS="auto"             # rendre /etc/hosts immuable : oui/non/aut
 BLOCKER_SAFESEARCH="oui"              # forcer le SafeSearch des moteurs : oui/non
 BLOCKER_BLOCK_TUNNELS="oui"           # bloquer Tor et les protocoles VPN : oui/non
 BLOCKER_LIST_URLS="https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts
+https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/nsfw.txt
 https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/doh-vpn-proxy-bypass.txt"
 # Une valeur passee dans l'environnement doit survivre au chargement de
 # blocker.conf : « BLOCKER_LANG=en sudo -E blocker-status » est documente, et

@@ -20,10 +20,28 @@
 # ceux de l'outil. La friction des quatre phases protege l'outil lui-meme,
 # elle n'a pas a s'appliquer a une liste qu'on tient a la main.
 #
+# LE BLOCAGE PAR MOTIF
+#
+# Les plateformes de streaming non officielles (MovieBox, fmovies, soap2day...)
+# changent de domaine plus vite qu'une liste ne se met a jour : le nom reste,
+# le TLD change — fmovies.to devient fmovies.co puis fmoviesz.to. Bloquer le
+# domaine du jour ne tient donc pas une semaine.
+#
+# « --motif » bloque le NOM plutot que le domaine : il ecrit d'un coup le nom
+# sur une centaine d'extensions et ses variantes numerotees ou suffixees. Hors
+# ligne, sans attendre qu'une liste publique remarque le nouveau miroir.
+#
+# Ce que cela ne couvre pas, et c'est assume : un changement de nom. Un motif
+# ne remplace pas de regarder ce qui s'ouvre reellement.
+#
 # Usage :
 #   blocker-block reddit.com x.com     bloquer un ou plusieurs domaines
+#   blocker-block --motif moviebox     bloquer un nom et ses miroirs
 #   blocker-block --liste              voir la liste personnelle
+#   blocker-block --motifs             voir les motifs actifs
 #   blocker-block --retirer reddit.com retirer un domaine (confirmation)
+#   blocker-block --retirer-motif MOT  retirer un motif (confirmation)
+# ---FIN-AIDE---
 
 set -uo pipefail
 
@@ -32,12 +50,32 @@ set -uo pipefail
 blocker_require_root
 
 PERSO="${BLOCKER_STATEDIR}/blocklists/50-perso.conf"
+MOTIFS="${BLOCKER_STATEDIR}/motifs"
+GENERE="${BLOCKER_STATEDIR}/blocklists/51-motifs.conf"
 
 if [ -t 1 ]; then
     VERT=$'\033[32m'; GRAS=$'\033[1m'; GRIS=$'\033[90m'; Z=$'\033[0m'
 else
     VERT=""; GRAS=""; GRIS=""; Z=""
 fi
+
+# --- Table des extensions ---------------------------------------------------
+# Les extensions ou ces plateformes reapparaissent : TLD nationaux bon marche
+# et sans verification, et nouveaux TLD generiques a quelques euros. Ce n'est
+# pas la liste des TLD existants — ce serait inutilement gros — mais celle des
+# extensions effectivement utilisees par ce type de site.
+TLD_MIROIRS="to tv cc se is sx mx tf ms pw ws la li lol ee ac ag am bz cx fm
+gd gs gy ht ki mn mu nu pe ph qa re sc sh st su tc tw vc vg ru ro cz pl
+co io me net org com info biz site online xyz club stream watch movie film
+live cfd icu top vip buzz sbs fun space website store shop win bid men
+click link uno zone digital today plus best cyou quest rest bond monster
+mom lat ink art fit run work world life app dev pro ng id in pk vn cm one
+now wiki help rip wtf gg gl ovh"
+
+# Variantes du nom lui-meme. La rotation se fait d'abord par extension, mais
+# un suffixe est souvent ajoute quand toutes les extensions du nom nu sont
+# brulees : fmovies -> fmoviesz, fmovies24.
+VARIANTES_MOTIF='"" 1 2 3 4 5 6 7 8 9 10 24 z s hd pro tv app free -hd -pro -tv -app'
 
 entete() {
     if [ "${BLOCKER_LANGUE}" = "en" ]; then
@@ -63,8 +101,79 @@ EOF
     fi
 }
 
+entete_motifs() {
+    if [ "${BLOCKER_LANGUE}" = "en" ]; then
+        cat <<'EOF'
+# blocker-adulte — generated file, do not edit
+#
+# Produced by « blocker-block --motif » from /var/lib/blocker-adulte/motifs.
+# Every edit made here is lost on the next run. Add or remove keywords with:
+#   sudo blocker-block --motif NAME
+#   sudo blocker-block --retirer-motif NAME
+EOF
+    else
+        cat <<'EOF'
+# blocker-adulte — fichier genere, ne pas editer
+#
+# Produit par « blocker-block --motif » a partir de
+# /var/lib/blocker-adulte/motifs. Toute modification faite ici est perdue a la
+# generation suivante. Ajouter ou retirer un motif avec :
+#   sudo blocker-block --motif NOM
+#   sudo blocker-block --retirer-motif NOM
+EOF
+    fi
+}
+
 domaine_valide() {
     printf '%s' "$1" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$'
+}
+
+# Un motif est une etiquette de domaine, pas un domaine : « moviebox », pas
+# « moviebox.ng ». Trois caracteres au minimum — « tv » bloquerait une
+# centaine de domaines legitimes.
+motif_valide() {
+    printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'
+}
+
+# Developpe un motif en domaines dnsmasq.
+developper_motif() {
+    local mot="$1" v t
+    for v in ${VARIANTES_MOTIF}; do
+        [ "${v}" = '""' ] && v=""
+        for t in ${TLD_MIROIRS}; do
+            printf 'address=/%s%s.%s/#\n' "${mot}" "${v}" "${t}"
+        done
+    done
+}
+
+# Reconstruit entierement 51-motifs.conf depuis le fichier des motifs. On
+# regenere plutot qu'on n'ajoute : un retrait doit vraiment retirer, et le
+# fichier reste le reflet exact de la liste des motifs.
+regenerer_motifs() {
+    local tmp mot
+    if [ ! -s "${MOTIFS}" ]; then
+        rm -f "${GENERE}"
+        return 0
+    fi
+    tmp="$(mktemp)"
+    entete_motifs > "${tmp}"
+    while IFS= read -r mot; do
+        [ -n "${mot}" ] || continue
+        printf '\n# --- %s ---\n' "${mot}" >> "${tmp}"
+        developper_motif "${mot}" >> "${tmp}"
+    done < "${MOTIFS}"
+
+    # Une liste invalide empecherait le resolveur de demarrer : on la fait
+    # valider avant de la mettre en place, jamais apres.
+    if command -v dnsmasq >/dev/null 2>&1 && \
+       ! dnsmasq --test --conf-file="${tmp}" >/dev/null 2>&1; then
+        rm -f "${tmp}"
+        blocker_err "$(m "le fichier de motifs genere est invalide, il n a pas ete mis en place" \
+                        "the generated pattern file is invalid, it was not put in place")"
+        return 1
+    fi
+    install -m 0644 "${tmp}" "${GENERE}"
+    rm -f "${tmp}"
 }
 
 lister() {
@@ -82,14 +191,38 @@ lister() {
         "$(m "domaine(s)." "domain(s).")" "${Z}"
 }
 
+lister_motifs() {
+    if [ ! -s "${MOTIFS}" ]; then
+        printf '%s\n\n' "$(m "Aucun motif actif." "No active pattern.")"
+        printf '%s\n  sudo blocker-block --motif moviebox\n' "$(m "En ajouter :" "Add one:")"
+        return 0
+    fi
+    printf '%s%s%s (%s)\n\n' "${GRAS}" \
+        "$(m "Motifs actifs" "Active patterns")" "${Z}" "${MOTIFS}"
+    while IFS= read -r mot; do
+        [ -n "${mot}" ] || continue
+        printf '  %-24s %s%s %s%s\n' "${mot}" "${GRIS}" \
+            "$(developper_motif "${mot}" | wc -l)" \
+            "$(m "domaines couverts" "domains covered")" "${Z}"
+    done < "${MOTIFS}"
+    printf '\n%s%d %s %s%s\n' "${GRIS}" \
+        "$(grep -c '^address=/' "${GENERE}" 2>/dev/null || echo 0)" \
+        "$(m "domaines generes dans" "generated domains in")" "${GENERE}" "${Z}"
+}
+
 recharger() {
+    local f
     # Une liste invalide empecherait le resolveur de demarrer : on la fait
     # valider par dnsmasq avant de recharger quoi que ce soit.
-    if command -v dnsmasq >/dev/null 2>&1 && \
-       ! dnsmasq --test --conf-file="${PERSO}" >/dev/null 2>&1; then
-        blocker_err "$(m "le fichier genere est invalide, rechargement annule" \
-                        "the generated file is invalid, reload cancelled")"
-        return 1
+    if command -v dnsmasq >/dev/null 2>&1; then
+        for f in "${PERSO}" "${GENERE}"; do
+            [ -s "${f}" ] || continue
+            if ! dnsmasq --test --conf-file="${f}" >/dev/null 2>&1; then
+                blocker_err "$(m "le fichier genere est invalide, rechargement annule" \
+                                "the generated file is invalid, reload cancelled")"
+                return 1
+            fi
+        done
     fi
     # Un SIGHUP ne relit pas les « address= » d'un conf-dir : il faut un
     # redemarrage complet du resolveur.
@@ -106,11 +239,16 @@ recharger() {
 # ---------------------------------------------------------------------------
 case "${1:-}" in
     --liste|--list) lister; exit 0 ;;
-    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --motifs|--patterns) lister_motifs; exit 0 ;;
+    -h|--help)
+        sed -n '2,/---FIN-AIDE---/p' "$0" | grep -v 'FIN-AIDE' | sed 's/^# \{0,1\}//'
+        exit 0 ;;
     "")
         printf '%s\n\n' "$(m "Aucun domaine indique." "No domain given.")"
         printf '  sudo blocker-block reddit.com x.com    %s\n' "$(m "bloquer" "block")"
+        printf '  sudo blocker-block --motif moviebox    %s\n' "$(m "bloquer un nom et ses miroirs" "block a name and its mirrors")"
         printf '  sudo blocker-block --liste             %s\n' "$(m "voir la liste" "show the list")"
+        printf '  sudo blocker-block --motifs            %s\n' "$(m "voir les motifs" "show the patterns")"
         printf '  sudo blocker-block --retirer DOMAINE   %s\n\n' "$(m "retirer" "remove")"
         lister
         exit 1
@@ -118,6 +256,80 @@ case "${1:-}" in
 esac
 
 install -d -m 0755 "$(dirname "${PERSO}")"
+
+# --- Retrait d'un motif -----------------------------------------------------
+if [ "$1" = "--retirer-motif" ] || [ "$1" = "--remove-pattern" ]; then
+    shift
+    [ $# -gt 0 ] || { echo "$(m "Indiquer au moins un motif a retirer." \
+                               "Give at least one pattern to remove.")" >&2; exit 2; }
+    retires=0
+    for mot in "$@"; do
+        mot="$(printf '%s' "${mot}" | tr '[:upper:]' '[:lower:]')"
+        if ! grep -qxF "${mot}" "${MOTIFS}" 2>/dev/null; then
+            printf '  %s %s\n' "${mot}" \
+                "$(m "n est pas un motif actif." "is not an active pattern.")"
+            continue
+        fi
+        printf '%s %s ? [%s] ' "$(m "Retirer le motif" "Remove pattern")" "${mot}" "$(m "o/N" "y/N")"
+        read -r rep </dev/tty || rep=""
+        case "${rep}" in
+            o|O|oui|y|Y|yes)
+                grep -vxF "${mot}" "${MOTIFS}" > "${MOTIFS}.tmp" 2>/dev/null
+                mv "${MOTIFS}.tmp" "${MOTIFS}"
+                blocker_notice "$(m "motif retire" "pattern removed") : ${mot}"
+                retires=$((retires + 1))
+                ;;
+            *) printf '  %s\n' "$(m "Conserve." "Kept.")" ;;
+        esac
+    done
+    if [ "${retires}" -gt 0 ]; then
+        regenerer_motifs && recharger
+    fi
+    exit 0
+fi
+
+# --- Ajout d'un motif -------------------------------------------------------
+if [ "$1" = "--motif" ] || [ "$1" = "--pattern" ]; then
+    shift
+    [ $# -gt 0 ] || { echo "$(m "Indiquer au moins un motif. Exemple : blocker-block --motif moviebox" \
+                               "Give at least one pattern. Example: blocker-block --motif moviebox")" >&2; exit 2; }
+
+    touch "${MOTIFS}"; chmod 0644 "${MOTIFS}"
+    ajoutes=0
+    for mot in "$@"; do
+        # « moviebox.ng » est ce qu'on a sous les yeux ; le motif est la partie
+        # qui ne change pas. On la deduit plutot que de renvoyer une erreur.
+        mot="${mot#http://}"; mot="${mot#https://}"; mot="${mot%%/*}"; mot="${mot#www.}"
+        mot="${mot%%.*}"
+        mot="$(printf '%s' "${mot}" | tr '[:upper:]' '[:lower:]')"
+
+        if ! motif_valide "${mot}"; then
+            blocker_err "$(m "motif invalide (3 caracteres au minimum, lettres, chiffres et tirets), ignore" \
+                            "invalid pattern (3 characters minimum, letters, digits and hyphens), skipped") : ${mot}"
+            continue
+        fi
+        if grep -qxF "${mot}" "${MOTIFS}" 2>/dev/null; then
+            printf '  %s %s\n' "${mot}" "$(m "est deja un motif actif." "is already an active pattern.")"
+            continue
+        fi
+
+        printf '%s\n' "${mot}" >> "${MOTIFS}"
+        printf '  %s+%s %s %s%s %s%s\n' "${VERT}" "${Z}" "${mot}" \
+            "${GRIS}" "$(developper_motif "${mot}" | wc -l)" \
+            "$(m "domaines couverts" "domains covered")" "${Z}"
+        blocker_notice "$(m "motif ajoute" "pattern added") : ${mot}"
+        ajoutes=$((ajoutes + 1))
+    done
+
+    if [ "${ajoutes}" -gt 0 ]; then
+        sort -u -o "${MOTIFS}" "${MOTIFS}"
+        regenerer_motifs && recharger
+        printf '\n%s%s%s sudo blocker-block --motifs\n' "${GRIS}" \
+            "$(m "Voir le detail :" "See the detail:")" "${Z}"
+    fi
+    exit 0
+fi
+
 [ -s "${PERSO}" ] || entete > "${PERSO}"
 
 # --- Retrait ----------------------------------------------------------------
@@ -149,6 +361,7 @@ fi
 
 # --- Ajout ------------------------------------------------------------------
 ajoutes=0
+dernier=""
 for d in "$@"; do
     d="${d#http://}"; d="${d#https://}"; d="${d%%/*}"; d="${d#www.}"
 
@@ -167,12 +380,13 @@ for d in "$@"; do
     blocker_notice "$(m "domaine ajoute a la liste personnelle" \
                        "domain added to the personal blocklist") : ${d}"
     ajoutes=$((ajoutes + 1))
+    dernier="${d}"
 done
 
 if [ "${ajoutes}" -gt 0 ]; then
     recharger
     printf '\n%s%s%s dig +short @127.0.0.1 %s\n' "${GRIS}" \
-        "$(m "Verifier :" "Check:")" "${Z}" "$1"
+        "$(m "Verifier :" "Check:")" "${Z}" "${dernier}"
 fi
 
 exit 0

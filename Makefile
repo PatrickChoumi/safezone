@@ -131,6 +131,8 @@ install:
 	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/blocklists
 	$(INSTALL_DATA) share/blocklists/00-base.conf \
 		$(DESTDIR)$(sharedir)/blocklists/00-base.conf
+	$(INSTALL_DATA) share/blocklists/02-plateformes.conf \
+		$(DESTDIR)$(sharedir)/blocklists/02-plateformes.conf
 
 	# --- Tests --------------------------------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/tests
@@ -143,6 +145,7 @@ install:
 	$(INSTALL_PROG) tests/test_safesearch.sh           $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/test_uninstall_phases.sh     $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/test_portabilite.sh           $(DESTDIR)$(sharedir)/tests/
+	$(INSTALL_PROG) tests/test_plateformes.sh          $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/test_i18n.sh                  $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/run_all.sh                    $(DESTDIR)$(sharedir)/tests/
 

@@ -970,6 +970,60 @@ quatre phases protège l'outil, pas une liste que vous tenez à la main.
 Les front-ends alternatifs (`libreddit`, `teddit`, `redlib`…) sont des domaines
 dédiés, donc blocables individuellement de la même façon.
 
+### Les plateformes de streaming non officielles
+
+MovieBox, trouvé sur un PC équipé de l'outil et **résolu sans le moindre
+obstacle**. Ce n'est pas une panne : c'est le critère d'admission des listes
+publiques qui ne le couvre pas.
+
+Toutes les listes utilisées ici — StevenBlack porn-only, Hagezi NSFW — classent
+par **domaine dédié** : un domaine y entre parce que le site ne fait que ça.
+Une plateforme de streaming non officielle n'en est pas un. C'est un site de
+films, dont le catalogue n'est pas classifié et dont la régie publicitaire,
+elle, l'est.
+
+Mesure faite sur la liste Hagezi NSFW du 18/09/2026 :
+
+| Plateforme | Entrées dans une liste de 74 633 domaines adultes |
+|---|---|
+| `moviebox` | 1 — `moviebox.com`, aucun des domaines de distribution réels |
+| `123movies`, `soap2day`, `hdtoday`, `putlocker` | 0 |
+| `primewire`, `vidsrc`, `streameast`, `netmirror` | 0 |
+
+Ce n'est pas un défaut de ces listes. C'est un angle mort de leur critère, et
+il faut le traiter ailleurs. Deux mécanismes, dont aucun ne remplace l'autre.
+
+**1. Une liste catégorielle livrée avec le paquet.**
+`/var/lib/blocker-adulte/blocklists/02-plateformes.conf` tient les domaines
+confirmés de ces plateformes, classés par famille : l'application MovieBox
+elle-même, les clients du même type, les sites de streaming pirate à régie
+publicitaire adulte, et les lecteurs embarqués qui servent cette publicité.
+Elle fonctionne hors ligne, dès la pose, et le self-heal la repose si elle
+disparaît.
+
+**2. Le blocage par motif, pour la rotation des miroirs.**
+Ces plateformes changent de domaine plus vite qu'une liste ne se met à jour :
+le nom reste, l'extension change — `fmovies.to` devient `fmovies.co` puis
+`fmoviesz.to`. Énumérer ne suffit donc pas, et la liste ci-dessus le dit
+elle-même. `--motif` bloque le **nom** plutôt que le domaine :
+
+```bash
+sudo blocker-block --motif moviebox   # 2 668 domaines couverts d'un coup
+sudo blocker-block --motifs           # voir les motifs actifs
+sudo blocker-block --retirer-motif moviebox
+```
+
+Le nom est écrit sur une centaine d'extensions (`.ng`, `.to`, `.pro`, `.icu`,
+`.sbs`…) et sur ses variantes numérotées ou suffixées (`moviebox7`,
+`movieboxhd`, `moviebox-pro`). Hors ligne, sans attendre qu'une liste publique
+remarque le nouveau miroir. Le fichier généré vit dans `51-motifs.conf`, et
+`blocker-block --motif moviebox.ng` accepte aussi le domaine complet : le motif
+en est déduit.
+
+**Ce que le motif ne couvre pas, et c'est assumé.** Un changement de *nom*. Un
+motif suit la rotation d'extension, pas une plateforme qui se rebaptise. Il ne
+remplace pas de regarder ce qui s'ouvre réellement sur la machine.
+
 ### Ce qui reste ouvert, par ordre de facilité
 
 Classé par ce qu'il en coûte réellement de l'emprunter — c'est la seule façon
@@ -985,6 +1039,7 @@ honnête de présenter la chose.
 | Live USB / autre système | Quelques minutes | **Hors périmètre** assumé (bootloader jamais touché) |
 | Endpoint DoH privé sur IP inconnue | Compétence technique réelle | **Ouvert** |
 | Accès direct par adresse IP | Compétence technique réelle | **Ouvert** — limite de tout filtrage DNS |
+| Plateforme de streaming non officielle (MovieBox, fmovies…) | Aucune compétence, aucun droit root | **Partiellement fermé** : liste catégorielle livrée + `blocker-block --motif` pour la rotation des miroirs. Un changement de nom passe |
 
 **Comment Tor est fermé.** Tor Browser est portable — il se télécharge, s'extrait
 et se lance sans aucun droit root. Son point faible : pour démarrer, il doit

@@ -31,6 +31,7 @@ TESTS="test_no_hidden_files.sh
 test_portabilite.sh
 test_i18n.sh
 test_dns_leak.sh
+test_plateformes.sh
 test_doh_blocked.sh
 test_safesearch.sh
 test_uninstall_phases.sh

@@ -186,9 +186,23 @@ if service_tourne blocker-resolver.service dnsmasq; then
                      "The resolver is running but blocks nothing: lists empty or not loaded.")"
             ;;
     esac
-    nb=$(cat "${BLOCKER_STATEDIR}"/blocklists/*.conf 2>/dev/null | grep -c '^address=/' || true)
+    # On compte les trois formes de blocage que dnsmasq accepte, pas la seule
+    # « address= ». Les listes Hagezi, deja utilisees par defaut, sont
+    # entierement ecrites en « local= » : ne compter que « address= » passait
+    # sous silence 16 000 domaines et faisait paraitre le filtrage bien plus
+    # maigre qu'il ne l'etait.
+    nb=$(cat "${BLOCKER_STATEDIR}"/blocklists/*.conf 2>/dev/null \
+         | grep -cE '^(address|local|server)=/' || true)
     detail "${nb} $(m "domaines dans les listes" "domains in the lists")"
-    recent="$(find "${BLOCKER_STATEDIR}/blocklists" -name '[1-9][0-9]-*.conf' -mtime -8 2>/dev/null | head -1)"
+    nb_motifs=$(grep -c . "${BLOCKER_STATEDIR}/motifs" 2>/dev/null || true)
+    if [ "${nb_motifs:-0}" -gt 0 ]; then
+        detail "${nb_motifs} $(m "motif(s) actif(s) — blocker-block --motifs" \
+                                "active pattern(s) — blocker-block --motifs")"
+    fi
+    # Seules les listes telechargees vieillissent. 50-perso.conf, que
+    # l'ancien motif « [1-9][0-9]-*.conf » attrapait aussi, aurait fait
+    # passer les listes pour fraiches sans qu'aucune n'ait ete rafraichie.
+    recent="$(find "${BLOCKER_STATEDIR}/blocklists" -name '[1-9][0-9]-liste.conf' -mtime -8 2>/dev/null | head -1)"
     if [ -z "${recent}" ]; then
         detail "$(m "listes telechargees jamais mises a jour depuis plus de 8 jours" \
                    "downloaded lists not refreshed for more than 8 days")"

@@ -60,6 +60,17 @@ if [ ! -s "${BLOCKER_STATEDIR}/blocklists/00-base.conf" ]; then
                   "base blocklist installed (works offline)")"
 fi
 
+# La liste des plateformes mixtes, elle, est reposee a chaque installation.
+# C'est une liste que le paquet maintient : un utilisateur qui la corrigerait
+# sur place perdrait sa correction a la mise a jour suivante et ne saurait pas
+# pourquoi. L'endroit prevu pour ses propres ajouts, c'est blocker-block.
+if [ -e "${BLOCKER_SHAREDIR}/blocklists/02-plateformes.conf" ]; then
+    install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/02-plateformes.conf" \
+                    "${BLOCKER_STATEDIR}/blocklists/02-plateformes.conf"
+    blocker_info "$(m "liste des plateformes mixtes installee" \
+                  "mixed-platform blocklist installed")"
+fi
+
 # ---------------------------------------------------------------------------
 # 1 bis. Resolveurs amont, generes depuis blocker.conf
 # ---------------------------------------------------------------------------

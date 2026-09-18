@@ -111,6 +111,33 @@ if [ "${policies_apres}" -gt "${policies_avant}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 3 quater. Listes livrees avec le paquet
+# ---------------------------------------------------------------------------
+# Supprimer un fichier de /var/lib est le contournement le moins couteux qui
+# existe : pas de droit particulier a obtenir au-dela de root, rien a
+# reconfigurer, et le resolveur redemarre sans se plaindre. On repose donc ce
+# que le paquet fournit des qu'il manque.
+#
+# 50-perso.conf et 51-motifs.conf n'apparaissent pas ici : ils appartiennent a
+# l'utilisateur, qui a le droit de les vider.
+reposees=0
+for livree in 00-base.conf 02-plateformes.conf; do
+    modele="${BLOCKER_SHAREDIR}/blocklists/${livree}"
+    pose="${BLOCKER_STATEDIR}/blocklists/${livree}"
+    [ -e "${modele}" ] || continue
+    [ -s "${pose}" ] && continue
+    if install -m 0644 "${modele}" "${pose}" 2>/dev/null; then
+        note "$(m "liste livree absente, reposee" "shipped list missing, reinstalled") : ${livree}"
+        reposees=$((reposees + 1))
+    fi
+done
+# Un seul redemarrage, quel que soit le nombre de listes reposees : chacun
+# coupe le DNS une fraction de seconde, et deux d'affilee n'apportent rien.
+if [ "${reposees}" -gt 0 ]; then
+    systemctl restart blocker-resolver.service 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
 # 3 ter. Resolveurs amont conformes a blocker.conf
 # ---------------------------------------------------------------------------
 # Sans amont, dnsmasq ne resout plus rien : la machine parait privee de reseau.

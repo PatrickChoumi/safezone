@@ -99,7 +99,12 @@ fi
 # l'utilisateur est de tout desinstaller.
 CANDIDAT="${WORK}/candidat"
 install -d -m 0755 "${CANDIDAT}"
-install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/00-base.conf" "${CANDIDAT}/00-base.conf"
+# Les listes livrees avec le paquet font partie de ce que dnsmasq chargera :
+# les omettre ici validerait une configuration qui n'est pas celle qui tourne.
+for livree in 00-base.conf 02-plateformes.conf; do
+    [ -e "${BLOCKER_SHAREDIR}/blocklists/${livree}" ] || continue
+    install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/${livree}" "${CANDIDAT}/${livree}"
+done
 for f in "${fichiers_ok[@]}"; do
     install -m 0644 "${f}" "${CANDIDAT}/$(basename "${f}")"
 done
@@ -116,11 +121,20 @@ if ! dnsmasq --test --conf-file="${TEST_CONF}" >/dev/null 2>&1; then
 fi
 
 # --- Mise en place ----------------------------------------------------------
-# On retire les anciennes listes telechargees (10-*.conf et suivantes) mais
-# jamais 00-base.conf, qui est le filet de securite hors ligne.
-find "${DEST}" -maxdepth 1 -name '[1-9][0-9]-*.conf' -delete
+# On retire les anciennes listes telechargees, et elles seules.
+#
+# Le motif etait « [1-9][0-9]-*.conf », cense ne designer que 10-liste.conf et
+# ses suivantes. Il designait aussi 50-perso.conf et 51-motifs.conf : la liste
+# personnelle et les motifs etaient effaces a chaque passage du timer, soit
+# tous les jours, alors que blocker-block promet l'inverse. On nomme donc le
+# suffixe que ce script ecrit lui-meme (« -liste.conf ») au lieu de tout ce
+# qui commence par deux chiffres.
+#
+# 00-base.conf et 02-plateformes.conf, livres avec le paquet, ne commencent
+# pas par un chiffre non nul : ils n'ont jamais ete concernes.
+find "${DEST}" -maxdepth 1 -name '[1-9][0-9]-liste.conf' -delete
 
-for f in "${CANDIDAT}"/[1-9][0-9]-*.conf; do
+for f in "${CANDIDAT}"/[1-9][0-9]-liste.conf; do
     [ -e "${f}" ] || continue
     install -m 0644 "${f}" "${DEST}/$(basename "${f}")"
 done
