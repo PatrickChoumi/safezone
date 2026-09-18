@@ -71,6 +71,23 @@ if [ -e "${BLOCKER_SHAREDIR}/blocklists/02-plateformes.conf" ]; then
                   "mixed-platform blocklist installed")"
 fi
 
+# Les motifs livres, poses UNE SEULE FOIS. Ensuite le fichier appartient a
+# l'utilisateur : « -e » et non « -s », pour qu'un fichier volontairement vide
+# ne soit pas re-rempli a la mise a jour suivante.
+if [ -e "${BLOCKER_SHAREDIR}/motifs-defaut" ] && [ ! -e "${BLOCKER_STATEDIR}/motifs" ]; then
+    grep -vE '^[[:space:]]*(#|$)' "${BLOCKER_SHAREDIR}/motifs-defaut" \
+        > "${BLOCKER_STATEDIR}/motifs" 2>/dev/null || true
+    chmod 0644 "${BLOCKER_STATEDIR}/motifs" 2>/dev/null || true
+    blocker_info "$(m "motifs livres poses" "shipped patterns installed") : $(grep -c . "${BLOCKER_STATEDIR}/motifs" 2>/dev/null || echo 0)"
+fi
+
+# Le fichier developpe est reconstruit a chaque passage : il depend de la table
+# des extensions, qu'une mise a jour du paquet peut avoir enrichie.
+if [ -x /usr/sbin/blocker-block ] && [ -s "${BLOCKER_STATEDIR}/motifs" ]; then
+    /usr/sbin/blocker-block --regenerer >/dev/null || \
+        blocker_warn "$(m "generation des motifs en echec" "generating the patterns failed")"
+fi
+
 # ---------------------------------------------------------------------------
 # 1 bis. Resolveurs amont, generes depuis blocker.conf
 # ---------------------------------------------------------------------------

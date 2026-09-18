@@ -404,21 +404,37 @@ the moment it is installed, and self-heal puts it back if it disappears.
 **2. Pattern blocking, for mirror rotation.**
 These platforms change domain faster than any list updates: the name stays,
 the extension moves — `fmovies.to` becomes `fmovies.co`, then `fmoviesz.to`.
-Enumerating is therefore not enough. `--motif` blocks the **name** rather than
-the domain:
+Enumerating is not enough, and that is measured: with the full public lists
+loaded (170,711 domains), **twelve streaming sites of the same kind picked at
+random and not enumerated all twelve got through**.
+
+`--motif` therefore blocks the **name** rather than the domain. The name is
+written across 161 extensions (`.ng`, `.to`, `.pro`, `.icu`, `.sbs`, `.ps`,
+`.ch`…) and across its numbered and suffixed variants — 3,703 domains per
+pattern, offline, without waiting for a public list to notice the new mirror.
+
+**24 patterns are installed by default**, from
+`/usr/share/blocker-adulte/motifs-defaut`: `moviebox`, `fmovies`, `soap2day`,
+`myflixer`, `hurawatch`, `cataz`, `vumoo`, `vidsrc`… about 89,000 domains
+generated locally. `/var/lib/blocker-adulte/motifs` is yours from then on: it
+is never rewritten again, not even by a package update.
 
 ```bash
-sudo blocker-block --motif moviebox   # 2,668 domains covered at once
-sudo blocker-block --motifs           # show active patterns
-sudo blocker-block --retirer-motif moviebox
+sudo blocker-block --motifs              # show active patterns
+sudo blocker-block --motif newname       # add one
+sudo blocker-block --retirer-motif cataz # remove one
+sudo blocker-block --regenerer           # after editing the file by hand
 ```
 
-The name is written across a hundred extensions (`.ng`, `.to`, `.pro`, `.icu`,
-`.sbs`…) and across its numbered and suffixed variants (`moviebox7`,
-`movieboxhd`, `moviebox-pro`), offline, without waiting for a public list to
-notice the new mirror. The generated file lives in `51-motifs.conf`, and
 `blocker-block --motif moviebox.ng` accepts a full domain too — the pattern is
-derived from it.
+derived from it. The expanded file lives in `51-motifs.conf`.
+
+**Names that are too generic are deliberately kept out of the defaults.** A
+pattern on `showbox` would catch `showbox.co`, and Showbox is also a Korean
+film studio; `einthusan.tv` looks like the others but is a licensed service.
+Those stay enumerated domain by domain, where the risk is nil. Verified:
+`primevideo.com`, `canalplus.com`, `arte.tv`, `france.tv`, `molotov.tv`,
+`mubi.com` and `showbox.co.kr` are untouched.
 
 **What a pattern does not cover, deliberately:** a change of *name*. It follows
 extension rotation, not a platform that rebrands itself. It does not replace

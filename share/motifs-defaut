@@ -1,0 +1,61 @@
+# blocker-adulte — motifs livres par defaut
+#
+# Installe dans : /usr/share/blocker-adulte/motifs-defaut
+# Copie vers    : /var/lib/blocker-adulte/motifs, a la premiere installation
+#                 seulement — ensuite le fichier vous appartient et n'est plus
+#                 jamais touche, meme par une mise a jour du paquet.
+#
+# POURQUOI DES MOTIFS PAR DEFAUT
+#
+# La liste 02-plateformes.conf enumere des domaines. Une enumeration est
+# toujours en retard : ces plateformes gardent leur nom et changent
+# d'extension. Mesure faite le 18/09/2026, listes publiques completes chargees
+# (170 711 domaines) : sur douze sites de streaming du meme genre choisis au
+# hasard et non enumeres, douze passaient.
+#
+# Un motif couvre le nom sur 161 extensions et ses variantes numerotees ou
+# suffixees, hors ligne. C'est ce qui rattrape la rotation.
+#
+# CE QUI N'EST PAS ICI, ET POURQUOI
+#
+# Les noms trop generiques ou portes aussi par une societe legitime sont
+# volontairement absents — un motif sur « showbox » attraperait showbox.co,
+# et Showbox est aussi un studio de cinema coreen. Ces noms restent dans
+# 02-plateformes.conf, domaine par domaine, ou le risque est nul.
+#
+# Retirer ce qui ne vous convient pas :
+#   sudo blocker-block --retirer-motif showbox
+# En ajouter :
+#   sudo blocker-block --motif NOM
+
+# --- L'application trouvee sur un PC equipe --------------------------------
+moviebox
+
+# --- Sites de streaming pirate a regie publicitaire adulte -----------------
+fmovies
+123movies
+soap2day
+sflix
+hdtoday
+putlocker
+gomovies
+primewire
+myflixer
+hurawatch
+movies2watch
+goojara
+cataz
+levidia
+vumoo
+watchseries
+braflix
+ridomovies
+
+# --- Applications et miroirs du meme type ----------------------------------
+netmirror
+flixtor
+
+# --- Lecteurs embarques et agregateurs -------------------------------------
+vidsrc
+streameast
+aniwave

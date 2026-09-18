@@ -1004,21 +1004,37 @@ disparaît.
 **2. Le blocage par motif, pour la rotation des miroirs.**
 Ces plateformes changent de domaine plus vite qu'une liste ne se met à jour :
 le nom reste, l'extension change — `fmovies.to` devient `fmovies.co` puis
-`fmoviesz.to`. Énumérer ne suffit donc pas, et la liste ci-dessus le dit
-elle-même. `--motif` bloque le **nom** plutôt que le domaine :
+`fmoviesz.to`. Énumérer ne suffit pas, et c'est mesuré : avec les listes
+publiques complètes chargées (170 711 domaines), **douze sites de streaming du
+même genre pris au hasard et non énumérés passaient tous les douze**.
+
+`--motif` bloque donc le **nom** plutôt que le domaine. Le nom est écrit sur
+161 extensions (`.ng`, `.to`, `.pro`, `.icu`, `.sbs`, `.ps`, `.ch`…) et sur ses
+variantes numérotées ou suffixées — 3 703 domaines par motif, hors ligne, sans
+attendre qu'une liste publique remarque le nouveau miroir.
+
+**24 motifs sont posés d'office à l'installation**, depuis
+`/usr/share/blocker-adulte/motifs-defaut` : `moviebox`, `fmovies`, `soap2day`,
+`myflixer`, `hurawatch`, `cataz`, `vumoo`, `vidsrc`… soit environ 89 000
+domaines générés localement. Le fichier `/var/lib/blocker-adulte/motifs` vous
+appartient ensuite : il n'est plus jamais réécrit, même par une mise à jour.
 
 ```bash
-sudo blocker-block --motif moviebox   # 2 668 domaines couverts d'un coup
-sudo blocker-block --motifs           # voir les motifs actifs
-sudo blocker-block --retirer-motif moviebox
+sudo blocker-block --motifs              # voir les motifs actifs
+sudo blocker-block --motif nouveaunom    # en ajouter un
+sudo blocker-block --retirer-motif cataz # en retirer un
+sudo blocker-block --regenerer           # après édition manuelle du fichier
 ```
 
-Le nom est écrit sur une centaine d'extensions (`.ng`, `.to`, `.pro`, `.icu`,
-`.sbs`…) et sur ses variantes numérotées ou suffixées (`moviebox7`,
-`movieboxhd`, `moviebox-pro`). Hors ligne, sans attendre qu'une liste publique
-remarque le nouveau miroir. Le fichier généré vit dans `51-motifs.conf`, et
 `blocker-block --motif moviebox.ng` accepte aussi le domaine complet : le motif
-en est déduit.
+en est déduit. Le fichier développé vit dans `51-motifs.conf`.
+
+**Les noms trop génériques sont volontairement hors des motifs par défaut.**
+Un motif sur `showbox` attraperait `showbox.co`, et Showbox est aussi un studio
+de cinéma coréen ; `einthusan.tv` ressemble aux autres mais est un service sous
+licence. Ces cas restent énumérés domaine par domaine, où le risque est nul.
+Vérifié : `primevideo.com`, `canalplus.com`, `arte.tv`, `france.tv`,
+`molotov.tv`, `mubi.com` et `showbox.co.kr` ne sont pas touchés.
 
 **Ce que le motif ne couvre pas, et c'est assumé.** Un changement de *nom*. Un
 motif suit la rotation d'extension, pas une plateforme qui se rebaptise. Il ne

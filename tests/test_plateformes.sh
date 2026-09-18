@@ -149,6 +149,51 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+titre "2 bis. Les motifs livres par defaut"
+# ---------------------------------------------------------------------------
+
+if [ -r "${DEPOT}/share/motifs-defaut" ]; then
+    DEFAUT="${DEPOT}/share/motifs-defaut"
+else
+    DEFAUT=/usr/share/blocker-adulte/motifs-defaut
+fi
+
+if [ ! -r "${DEFAUT}" ]; then
+    ko "motifs livres introuvables : ${DEFAUT}"
+else
+    nb_def="$(grep -cvE '^[[:space:]]*(#|$)' "${DEFAUT}" || true)"
+    if [ "${nb_def}" -ge 10 ]; then
+        ok "${nb_def} motifs livres par defaut"
+    else
+        ko "seulement ${nb_def} motifs livres"
+    fi
+
+    # Chaque motif doit passer la validation de blocker-block. Un motif rejete
+    # serait pose dans /var/lib puis ignore en silence : le paquet promettrait
+    # une couverture qu'il ne fournit pas.
+    eval "$(sed -n '/^motif_valide()/,/^}/p' "${SRC_BLOCK}")"
+    invalides=""
+    while IFS= read -r mot; do
+        case "${mot}" in ''|'#'*) continue ;; esac
+        motif_valide "${mot}" || invalides="${invalides} ${mot}"
+    done < "${DEFAUT}"
+    if [ -z "${invalides}" ]; then
+        ok "tous les motifs livres passent la validation de blocker-block"
+    else
+        ko "motifs livres refuses par blocker-block :${invalides}"
+    fi
+
+    # Un nom trop court attraperait des domaines legitimes en masse.
+    courts="$(grep -vE '^[[:space:]]*(#|$)' "${DEFAUT}" | awk 'length($0) < 5 {print}' || true)"
+    if [ -z "${courts}" ]; then
+        ok "aucun motif livre de moins de 5 caracteres"
+    else
+        ko "motifs livres trop courts (risque de faux positifs) :"
+        printf '%s\n' "${courts}" | sed 's/^/        /'
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 titre "3. La mise a jour des listes epargne la liste personnelle"
 # ---------------------------------------------------------------------------
 

@@ -133,6 +133,7 @@ install:
 		$(DESTDIR)$(sharedir)/blocklists/00-base.conf
 	$(INSTALL_DATA) share/blocklists/02-plateformes.conf \
 		$(DESTDIR)$(sharedir)/blocklists/02-plateformes.conf
+	$(INSTALL_DATA) share/motifs-defaut $(DESTDIR)$(sharedir)/motifs-defaut
 
 	# --- Tests --------------------------------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/tests
