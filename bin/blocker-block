@@ -41,6 +41,9 @@
 #   blocker-block --motifs             voir les motifs actifs
 #   blocker-block --retirer reddit.com retirer un domaine (confirmation)
 #   blocker-block --retirer-motif MOT  retirer un motif (confirmation)
+#   blocker-block --categorie          voir les categories optionnelles
+#   blocker-block --categorie tout     activer toutes les categories
+#   blocker-block --retirer-categorie NOM   desactiver une categorie
 # ---FIN-AIDE---
 
 set -uo pipefail
@@ -52,6 +55,8 @@ blocker_require_root
 PERSO="${BLOCKER_STATEDIR}/blocklists/50-perso.conf"
 MOTIFS="${BLOCKER_STATEDIR}/motifs"
 MOTIFS_DEFAUT="${BLOCKER_SHAREDIR}/motifs-defaut"
+CATDIR="${BLOCKER_SHAREDIR}/categories"
+CAT_ACTIVES="${BLOCKER_STATEDIR}/categories-actives"
 GENERE="${BLOCKER_STATEDIR}/blocklists/51-motifs.conf"
 
 if [ -t 1 ]; then
@@ -190,6 +195,66 @@ regenerer_motifs() {
     rm -f "${tmp}"
 }
 
+# --- Categories optionnelles ------------------------------------------------
+# Des listes livrees mais non posees : tout ce qui a un usage legitime serieux
+# et dont le blocage est un arbitrage, pas une evidence. L'etat vit dans un
+# fichier de noms, pas dans la presence des fichiers poses : sans cela,
+# supprimer un fichier de /var/lib desactiverait la categorie en silence, et le
+# self-heal n'aurait rien pour savoir quoi remettre.
+
+categories_disponibles() {
+    [ -d "${CATDIR}" ] || return 0
+    find "${CATDIR}" -maxdepth 1 -name '*.conf' -printf '%f\n' 2>/dev/null \
+        | sed 's/\.conf$//' | sort
+}
+
+categorie_active() {
+    grep -qxF "$1" "${CAT_ACTIVES}" 2>/dev/null
+}
+
+# Repose les categories actives et retire celles qui ne le sont plus.
+regenerer_categories() {
+    local nom
+    find "${BLOCKER_STATEDIR}/blocklists" -maxdepth 1 -name '40-cat-*.conf' \
+        -delete 2>/dev/null
+    [ -s "${CAT_ACTIVES}" ] || return 0
+    while IFS= read -r nom; do
+        motif_utile "${nom}" || continue
+        [ -e "${CATDIR}/${nom}.conf" ] || continue
+        install -m 0644 "${CATDIR}/${nom}.conf" \
+            "${BLOCKER_STATEDIR}/blocklists/40-cat-${nom}.conf"
+    done < "${CAT_ACTIVES}"
+}
+
+lister_categories() {
+    local nom etat n
+    if [ -z "$(categories_disponibles)" ]; then
+        printf '%s\n' "$(m "Aucune categorie livree." "No category shipped.")"
+        return 0
+    fi
+    printf '%s%s%s\n\n' "${GRAS}" \
+        "$(m "Categories optionnelles" "Optional categories")" "${Z}"
+    while IFS= read -r nom; do
+        [ -n "${nom}" ] || continue
+        n="$(grep -c '^address=/' "${CATDIR}/${nom}.conf" 2>/dev/null || echo 0)"
+        if categorie_active "${nom}"; then
+            etat="${VERT}$(m "active  " "active  ")${Z}"
+        else
+            etat="${GRIS}$(m "inactive" "inactive")${Z}"
+        fi
+        printf '  %s  %-20s %s%s %s%s\n' "${etat}" "${nom}" \
+            "${GRIS}" "${n}" "$(m "domaines" "domains")" "${Z}"
+    done <<EOF
+$(categories_disponibles)
+EOF
+    printf '\n%s%s%s\n' "${GRIS}" \
+        "$(m "Activer : sudo blocker-block --categorie NOM   (ou « tout »)" \
+            "Enable: sudo blocker-block --categorie NAME   (or « tout »)")" "${Z}"
+    printf '%s%s%s\n' "${GRIS}" \
+        "$(m "Desactiver : sudo blocker-block --retirer-categorie NOM" \
+            "Disable: sudo blocker-block --retirer-categorie NAME")" "${Z}"
+}
+
 lister() {
     if [ ! -s "${PERSO}" ]; then
         printf '%s\n\n' "$(m "Aucun domaine dans la liste personnelle." \
@@ -229,7 +294,8 @@ recharger() {
     # Une liste invalide empecherait le resolveur de demarrer : on la fait
     # valider par dnsmasq avant de recharger quoi que ce soit.
     if command -v dnsmasq >/dev/null 2>&1; then
-        for f in "${PERSO}" "${GENERE}"; do
+        for f in "${PERSO}" "${GENERE}" \
+                 "${BLOCKER_STATEDIR}"/blocklists/40-cat-*.conf; do
             [ -s "${f}" ] || continue
             if ! dnsmasq --test --conf-file="${f}" >/dev/null 2>&1; then
                 blocker_err "$(m "le fichier genere est invalide, rechargement annule" \
@@ -254,13 +320,19 @@ recharger() {
 case "${1:-}" in
     --liste|--list) lister; exit 0 ;;
     --motifs|--patterns) lister_motifs; exit 0 ;;
+    --categorie|--categories|--category)
+        if [ $# -le 1 ]; then lister_categories; exit 0; fi
+        ;;
     --regenerer|--regenerate)
         # Utilise par blocker-configure apres avoir pose les motifs livres, et
         # par qui a edite /var/lib/blocker-adulte/motifs a la main.
         install -d -m 0755 "$(dirname "${PERSO}")"
         regenerer_motifs || exit 1
+        regenerer_categories
         printf '%s : %s\n' "$(m "domaines generes" "generated domains")" \
             "$(grep -c '^address=/' "${GENERE}" 2>/dev/null || echo 0)"
+        printf '%s : %s\n' "$(m "categories actives" "active categories")" \
+            "$(grep -c . "${CAT_ACTIVES}" 2>/dev/null || echo 0)"
         # Pas de redemarrage si le resolveur ne tourne pas encore : pendant une
         # installation il n'est pas encore la, et un avertissement a ce moment
         # ferait croire a une panne.
@@ -277,6 +349,7 @@ case "${1:-}" in
         printf '  sudo blocker-block --motif moviebox    %s\n' "$(m "bloquer un nom et ses miroirs" "block a name and its mirrors")"
         printf '  sudo blocker-block --liste             %s\n' "$(m "voir la liste" "show the list")"
         printf '  sudo blocker-block --motifs            %s\n' "$(m "voir les motifs" "show the patterns")"
+        printf '  sudo blocker-block --categorie         %s\n' "$(m "voir les categories optionnelles" "show the optional categories")"
         printf '  sudo blocker-block --retirer DOMAINE   %s\n\n' "$(m "retirer" "remove")"
         lister
         exit 1
@@ -284,6 +357,83 @@ case "${1:-}" in
 esac
 
 install -d -m 0755 "$(dirname "${PERSO}")"
+
+# --- Activation d'une categorie ---------------------------------------------
+if [ "$1" = "--categorie" ] || [ "$1" = "--categories" ] || [ "$1" = "--category" ]; then
+    shift
+    touch "${CAT_ACTIVES}"; chmod 0644 "${CAT_ACTIVES}"
+
+    # « tout » evite d'avoir a retenir six noms. C'est la reponse a « bloque
+    # tout ce qui peut en contenir » : le maximum que l'outil sait poser.
+    if [ "${1:-}" = "tout" ] || [ "${1:-}" = "all" ]; then
+        mapfile -t _toutes < <(categories_disponibles)
+        if [ "${#_toutes[@]}" -eq 0 ]; then
+            blocker_err "$(m "aucune categorie livree" "no category shipped")"
+            exit 1
+        fi
+        set -- "${_toutes[@]}"
+    fi
+
+    actives=0
+    for nom in "$@"; do
+        nom="${nom%.conf}"
+        if [ ! -e "${CATDIR}/${nom}.conf" ]; then
+            blocker_err "$(m "categorie inconnue" "unknown category") : ${nom}"
+            printf '  %s\n' "$(m "Voir : sudo blocker-block --categorie" \
+                                 "See: sudo blocker-block --categorie")"
+            continue
+        fi
+        if categorie_active "${nom}"; then
+            printf '  %s %s\n' "${nom}" "$(m "est deja active." "is already active.")"
+            continue
+        fi
+        printf '%s\n' "${nom}" >> "${CAT_ACTIVES}"
+        printf '  %s+%s %-20s %s%s %s%s\n' "${VERT}" "${Z}" "${nom}" "${GRIS}" \
+            "$(grep -c '^address=/' "${CATDIR}/${nom}.conf" 2>/dev/null || echo 0)" \
+            "$(m "domaines" "domains")" "${Z}"
+        blocker_notice "$(m "categorie activee" "category enabled") : ${nom}"
+        actives=$((actives + 1))
+    done
+
+    if [ "${actives}" -gt 0 ]; then
+        sort -u -o "${CAT_ACTIVES}" "${CAT_ACTIVES}"
+        regenerer_categories
+        recharger
+    fi
+    exit 0
+fi
+
+# --- Desactivation d'une categorie -------------------------------------------
+if [ "$1" = "--retirer-categorie" ] || [ "$1" = "--remove-category" ]; then
+    shift
+    [ $# -gt 0 ] || { echo "$(m "Indiquer au moins une categorie a desactiver." \
+                               "Give at least one category to disable.")" >&2; exit 2; }
+    retirees=0
+    for nom in "$@"; do
+        nom="${nom%.conf}"
+        if ! categorie_active "${nom}"; then
+            printf '  %s %s\n' "${nom}" "$(m "n est pas active." "is not active.")"
+            continue
+        fi
+        printf '%s %s ? [%s] ' "$(m "Desactiver la categorie" "Disable category")" \
+            "${nom}" "$(m "o/N" "y/N")"
+        read -r rep </dev/tty || rep=""
+        case "${rep}" in
+            o|O|oui|y|Y|yes)
+                grep -vxF "${nom}" "${CAT_ACTIVES}" > "${CAT_ACTIVES}.tmp" 2>/dev/null
+                mv "${CAT_ACTIVES}.tmp" "${CAT_ACTIVES}"
+                blocker_notice "$(m "categorie desactivee" "category disabled") : ${nom}"
+                retirees=$((retirees + 1))
+                ;;
+            *) printf '  %s\n' "$(m "Conservee." "Kept.")" ;;
+        esac
+    done
+    if [ "${retirees}" -gt 0 ]; then
+        regenerer_categories
+        recharger
+    fi
+    exit 0
+fi
 
 # --- Retrait d'un motif -----------------------------------------------------
 if [ "$1" = "--retirer-motif" ] || [ "$1" = "--remove-pattern" ]; then

@@ -440,6 +440,39 @@ Those stay enumerated domain by domain, where the risk is nil. Verified:
 extension rotation, not a platform that rebrands itself. It does not replace
 looking at what actually opens on the machine.
 
+### Other categories the lists do not cover
+
+Same method, applied more widely. Measured 18/09/2026 against the three default
+lists combined (**153,093 unique domains**):
+
+| Category | Already covered |
+|---|---|
+| "Unfiltered" AI companions (`chub.ai`, `charstar.ai`, `figgs.ai`…) | **0 / 6** |
+| Imageboards (`4channel.org`, `endchan`, `soyjak`) | **0 / 3** |
+| AI undressing tools | 6 / 9 |
+| Adult dump hosts | 10 / 13 |
+
+AI companions are the clearest gap: the category is too recent for the lists to
+have seen it. What was missing now ships in `03-nsfw.conf`, enabled by default,
+plus 20 more patterns for the fast-rotating families (`bunkr`, `coomer`,
+`nhentai`, `clothoff`…).
+
+**What is not enabled by default.** Anything with serious legitimate use —
+Reddit, X, Discord, Pixiv, MangaDex, Civitai, general file hosts, torrent sites
+— ships but stays **inactive**. Blocking `discord.com` to avoid adult content
+also breaks normal use of the machine: that trade-off is yours.
+
+```bash
+sudo blocker-block --categorie                      # list the 6 categories
+sudo blocker-block --categorie ia-generative        # enable one
+sudo blocker-block --categorie tout                 # enable them all
+sudo blocker-block --retirer-categorie reseaux-sociaux
+```
+
+State lives in `/var/lib/blocker-adulte/categories-actives`, and self-heal puts
+back an active category whose file went missing — deleting the file is not
+enough to disable it.
+
 The honest summary: **yes for everyday impulse, no against someone who spends
 five minutes deliberately working around it.** That was the goal.
 

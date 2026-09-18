@@ -194,6 +194,70 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+titre "2 ter. Listes categorielles et categories optionnelles"
+# ---------------------------------------------------------------------------
+
+if [ -d "${DEPOT}/share/categories" ]; then
+    CATDIR_T="${DEPOT}/share/categories"; NSFW_T="${DEPOT}/share/blocklists/03-nsfw.conf"
+else
+    CATDIR_T=/usr/share/blocker-adulte/categories; NSFW_T=/usr/share/blocker-adulte/blocklists/03-nsfw.conf
+fi
+
+if [ ! -r "${NSFW_T}" ]; then
+    ko "03-nsfw.conf introuvable : ${NSFW_T}"
+else
+    ok "03-nsfw.conf trouvee ($(grep -c '^address=/' "${NSFW_T}") domaines)"
+fi
+
+nb_cat="$(find "${CATDIR_T}" -maxdepth 1 -name '*.conf' 2>/dev/null | wc -l)"
+if [ "${nb_cat}" -ge 3 ]; then
+    ok "${nb_cat} categories optionnelles livrees"
+else
+    ko "seulement ${nb_cat} categorie(s) livree(s)"
+fi
+
+# Chaque fichier livre doit etre une liste dnsmasq valide : un seul fichier
+# casse empecherait le resolveur de demarrer, donc plus aucun DNS.
+mauvais_cat=0
+for f in "${NSFW_T}" "${CATDIR_T}"/*.conf; do
+    [ -e "${f}" ] || continue
+    if grep -vE '^[[:space:]]*(#|$)' "${f}" | grep -qvE '^address=/[a-z0-9.-]+/#$'; then
+        ko "lignes mal formees dans $(basename "${f}")"
+        mauvais_cat=$((mauvais_cat + 1))
+    fi
+    if command -v dnsmasq >/dev/null 2>&1 && \
+       ! dnsmasq --test --conf-file="${f}" >/dev/null 2>&1; then
+        ko "dnsmasq refuse $(basename "${f}")"
+        mauvais_cat=$((mauvais_cat + 1))
+    fi
+done
+[ "${mauvais_cat}" -eq 0 ] && ok "toutes les listes livrees sont valides pour dnsmasq"
+
+# Ce qui a un usage legitime serieux ne doit PAS etre pose d'office : c'est
+# tout l'interet d'avoir separe 03-nsfw.conf des categories.
+defaut="$(cat "${NSFW_T}" "${DEPOT}/share/blocklists/02-plateformes.conf" 2>/dev/null)"
+fuites=""
+for d in reddit.com x.com discord.com pixiv.net mangadex.org civitai.com \
+         gofile.io rumble.com thepiratebay.org einthusan.tv; do
+    printf '%s\n' "${defaut}" | grep -q "^address=/${d}/" && fuites="${fuites} ${d}"
+done
+if [ -z "${fuites}" ]; then
+    ok "aucun domaine a usage legitime dans les listes posees d office"
+else
+    ko "poses d office alors qu ils relevent d une categorie optionnelle :${fuites}"
+fi
+
+# Le nom de chaque categorie doit etre utilisable tel quel comme argument.
+for f in "${CATDIR_T}"/*.conf; do
+    [ -e "${f}" ] || continue
+    nom="$(basename "${f}" .conf)"
+    case "${nom}" in
+        *[!a-z0-9-]*) ko "nom de categorie inutilisable en argument : ${nom}" ;;
+    esac
+done
+ok "les noms de categories sont utilisables tels quels en argument"
+
+# ---------------------------------------------------------------------------
 titre "3. La mise a jour des listes epargne la liste personnelle"
 # ---------------------------------------------------------------------------
 
@@ -209,8 +273,9 @@ else
     info "motif de suppression en vigueur : ${MOTIF_SUPPR}"
 
     BAC="$(mktemp -d)"
-    for f in 00-base.conf 02-plateformes.conf 01-upstream.conf 05-safesearch.conf \
-             10-liste.conf 11-liste.conf 50-perso.conf 51-motifs.conf; do
+    for f in 00-base.conf 02-plateformes.conf 03-nsfw.conf 01-upstream.conf \
+             05-safesearch.conf 10-liste.conf 11-liste.conf 40-cat-torrent.conf \
+             50-perso.conf 51-motifs.conf; do
         : > "${BAC}/${f}"
     done
 
@@ -226,8 +291,8 @@ else
     done
 
     # Ce qui doit survivre.
-    for f in 00-base.conf 02-plateformes.conf 01-upstream.conf 05-safesearch.conf \
-             50-perso.conf 51-motifs.conf; do
+    for f in 00-base.conf 02-plateformes.conf 03-nsfw.conf 01-upstream.conf \
+             05-safesearch.conf 40-cat-torrent.conf 50-perso.conf 51-motifs.conf; do
         if [ -e "${BAC}/${f}" ]; then
             ok "${f} conservee"
         else

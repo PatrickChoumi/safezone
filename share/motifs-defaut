@@ -59,3 +59,34 @@ flixtor
 vidsrc
 streameast
 aniwave
+
+# --- Hebergeurs de dumps adultes (rotation tres rapide) --------------------
+# bunkr.si devient bunkr.cr puis bunkr.fi en quelques mois. Les listes
+# publiques couvrent le domaine du jour, jamais celui de la semaine suivante.
+bunkr
+cyberdrop
+coomer
+simpcity
+fapello
+thothub
+leakedzone
+thotslife
+dirtyship
+fapachi
+
+# --- Hentai et imageboards d'art -------------------------------------------
+nhentai
+hanime
+rule34
+
+# --- Compagnons IA et deshabillage -----------------------------------------
+# « undress », « chub », « kemono » et « hitomi » sont volontairement absents :
+# trop proches d'un mot courant ou d'un prenom pour servir de motif. Ils
+# restent enumeres domaine par domaine dans 03-nsfw.conf.
+janitorai
+spicychat
+crushon
+charstar
+moescape
+clothoff
+nudify

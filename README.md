@@ -1040,6 +1040,50 @@ Vérifié : `primevideo.com`, `canalplus.com`, `arte.tv`, `france.tv`,
 motif suit la rotation d'extension, pas une plateforme qui se rebaptise. Il ne
 remplace pas de regarder ce qui s'ouvre réellement sur la machine.
 
+### Les autres catégories que les listes ne couvrent pas
+
+Même méthode que ci-dessus, appliquée plus largement. Mesure du 18/09/2026
+contre les trois listes par défaut réunies (**153 093 domaines uniques**) :
+
+| Catégorie | Déjà couverte |
+|---|---|
+| Compagnons IA « sans filtre » (`chub.ai`, `charstar.ai`, `figgs.ai`…) | **0 / 6** |
+| Imageboards (`4channel.org`, `endchan`, `soyjak`) | **0 / 3** |
+| Outils de déshabillage par IA | 6 / 9 |
+| Hébergeurs de dumps adultes | 10 / 13 |
+| Booru, hentai, torrents, cam | 8 à 10 / 11 |
+
+Les compagnons IA sont le trou le plus net : la catégorie est trop récente pour
+que les listes l'aient vue. Ce qui manquait est désormais dans
+`03-nsfw.conf`, posé d'office, plus 20 motifs supplémentaires pour les familles
+à rotation rapide (`bunkr`, `coomer`, `nhentai`, `clothoff`…).
+
+**Ce qui n'est pas posé d'office.** Tout ce qui a un usage légitime sérieux —
+Reddit, X, Discord, Pixiv, MangaDex, Civitai, les hébergeurs de fichiers
+généralistes, les sites de torrents — est livré mais **inactif**. Bloquer
+`discord.com` pour empêcher d'y croiser du contenu adulte casse aussi tout
+l'usage normal de la machine : c'est un arbitrage, et il vous revient.
+
+```bash
+sudo blocker-block --categorie                      # voir les 6 catégories
+sudo blocker-block --categorie ia-generative        # en activer une
+sudo blocker-block --categorie tout                 # toutes les activer
+sudo blocker-block --retirer-categorie reseaux-sociaux
+```
+
+| Catégorie | Contenu | À peser |
+|---|---|---|
+| `ia-generative` | Civitai, NovelAI, Tensor.art, SeaArt, Perchance | Communauté et usage pro réels |
+| `art-manga` | Pixiv, MangaDex, Manganato, Toonily | Principales plateformes d'illustration et de manga |
+| `partage-fichiers` | Gofile, Pixeldrain, Catbox, Krakenfiles | Gêne un usage quotidien normal |
+| `torrent` | The Pirate Bay, Nyaa, TorrentGalaxy, YTS | Sert aussi à distribuer du libre |
+| `video-alternatif` | Odysee, BitChute, Rumble | Modération faible, pas adulte par nature |
+| `reseaux-sociaux` | Reddit, X, Tumblr, Discord, Bluesky, VK, Telegram | **La plus coûteuse.** Essayez d'abord `blocker-block reddit.com` |
+
+L'état vit dans `/var/lib/blocker-adulte/categories-actives`, et le self-heal
+repose une catégorie active dont le fichier aurait disparu — supprimer le
+fichier ne suffit donc pas à la désactiver.
+
 ### Ce qui reste ouvert, par ordre de facilité
 
 Classé par ce qu'il en coûte réellement de l'emprunter — c'est la seule façon

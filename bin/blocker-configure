@@ -64,12 +64,13 @@ fi
 # C'est une liste que le paquet maintient : un utilisateur qui la corrigerait
 # sur place perdrait sa correction a la mise a jour suivante et ne saurait pas
 # pourquoi. L'endroit prevu pour ses propres ajouts, c'est blocker-block.
-if [ -e "${BLOCKER_SHAREDIR}/blocklists/02-plateformes.conf" ]; then
-    install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/02-plateformes.conf" \
-                    "${BLOCKER_STATEDIR}/blocklists/02-plateformes.conf"
-    blocker_info "$(m "liste des plateformes mixtes installee" \
-                  "mixed-platform blocklist installed")"
-fi
+for livree in 02-plateformes.conf 03-nsfw.conf; do
+    [ -e "${BLOCKER_SHAREDIR}/blocklists/${livree}" ] || continue
+    install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/${livree}" \
+                    "${BLOCKER_STATEDIR}/blocklists/${livree}"
+    blocker_info "$(m "liste categorielle installee" \
+                  "category blocklist installed") : ${livree}"
+done
 
 # Les motifs livres, poses UNE SEULE FOIS. Ensuite le fichier appartient a
 # l'utilisateur : « -e » et non « -s », pour qu'un fichier volontairement vide
@@ -83,9 +84,10 @@ fi
 
 # Le fichier developpe est reconstruit a chaque passage : il depend de la table
 # des extensions, qu'une mise a jour du paquet peut avoir enrichie.
-if [ -x /usr/sbin/blocker-block ] && [ -s "${BLOCKER_STATEDIR}/motifs" ]; then
+if [ -x /usr/sbin/blocker-block ]; then
     /usr/sbin/blocker-block --regenerer >/dev/null || \
-        blocker_warn "$(m "generation des motifs en echec" "generating the patterns failed")"
+        blocker_warn "$(m "generation des motifs et categories en echec" \
+                  "generating the patterns and categories failed")"
 fi
 
 # ---------------------------------------------------------------------------

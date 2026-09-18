@@ -121,7 +121,7 @@ fi
 # 50-perso.conf et 51-motifs.conf n'apparaissent pas ici : ils appartiennent a
 # l'utilisateur, qui a le droit de les vider.
 reposees=0
-for livree in 00-base.conf 02-plateformes.conf; do
+for livree in 00-base.conf 02-plateformes.conf 03-nsfw.conf; do
     modele="${BLOCKER_SHAREDIR}/blocklists/${livree}"
     pose="${BLOCKER_STATEDIR}/blocklists/${livree}"
     [ -e "${modele}" ] || continue
@@ -131,6 +131,27 @@ for livree in 00-base.conf 02-plateformes.conf; do
         reposees=$((reposees + 1))
     fi
 done
+# Les categories activees et les motifs : une categorie active dont le fichier
+# a disparu de /var/lib serait desactivee en silence. L'etat fait foi, pas la
+# presence du fichier.
+manquantes=0
+if [ -s "${BLOCKER_STATEDIR}/categories-actives" ]; then
+    while IFS= read -r nom; do
+        case "${nom}" in ''|'#'*) continue ;; esac
+        [ -s "${BLOCKER_STATEDIR}/blocklists/40-cat-${nom}.conf" ] || manquantes=1
+    done < "${BLOCKER_STATEDIR}/categories-actives"
+fi
+if [ -s "${BLOCKER_STATEDIR}/motifs" ] && \
+   [ ! -s "${BLOCKER_STATEDIR}/blocklists/51-motifs.conf" ]; then
+    manquantes=1
+fi
+if [ "${manquantes}" -eq 1 ] && [ -x /usr/sbin/blocker-block ]; then
+    note "$(m "motifs ou categories absents, regeneration" \
+           "patterns or categories missing, regenerating")"
+    /usr/sbin/blocker-block --regenerer >/dev/null 2>&1 || true
+    reposees=$((reposees + 1))
+fi
+
 # Un seul redemarrage, quel que soit le nombre de listes reposees : chacun
 # coupe le DNS une fraction de seconde, et deux d'affilee n'apportent rien.
 if [ "${reposees}" -gt 0 ]; then

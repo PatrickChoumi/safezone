@@ -101,7 +101,7 @@ CANDIDAT="${WORK}/candidat"
 install -d -m 0755 "${CANDIDAT}"
 # Les listes livrees avec le paquet font partie de ce que dnsmasq chargera :
 # les omettre ici validerait une configuration qui n'est pas celle qui tourne.
-for livree in 00-base.conf 02-plateformes.conf; do
+for livree in 00-base.conf 02-plateformes.conf 03-nsfw.conf; do
     [ -e "${BLOCKER_SHAREDIR}/blocklists/${livree}" ] || continue
     install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/${livree}" "${CANDIDAT}/${livree}"
 done

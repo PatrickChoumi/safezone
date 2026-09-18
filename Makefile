@@ -133,7 +133,15 @@ install:
 		$(DESTDIR)$(sharedir)/blocklists/00-base.conf
 	$(INSTALL_DATA) share/blocklists/02-plateformes.conf \
 		$(DESTDIR)$(sharedir)/blocklists/02-plateformes.conf
+	$(INSTALL_DATA) share/blocklists/03-nsfw.conf \
+		$(DESTDIR)$(sharedir)/blocklists/03-nsfw.conf
 	$(INSTALL_DATA) share/motifs-defaut $(DESTDIR)$(sharedir)/motifs-defaut
+
+	# --- Categories optionnelles -------------------------------------------
+	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/categories
+	for f in share/categories/*.conf; do \
+		$(INSTALL_DATA) "$$f" $(DESTDIR)$(sharedir)/categories/; \
+	done
 
 	# --- Tests --------------------------------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/tests
