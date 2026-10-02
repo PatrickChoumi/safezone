@@ -92,10 +92,34 @@ if [ ! -r "${FICHIER_SOURCE}" ] || [ "$(cat "${FICHIER_SOURCE}")" != "${SOURCE}"
     blocker_info "$(m "depot memorise pour les prochaines fois" "repository remembered for next time") : ${SOURCE}"
 fi
 
-# git refuse de travailler dans un depot appartenant a un autre utilisateur —
-# le cas normal ici, puisqu'on est root et que le clone appartient a l'humain.
-git config --global --get-all safe.directory 2>/dev/null | grep -qxF "${SOURCE}" || \
-    git config --global --add safe.directory "${SOURCE}" 2>/dev/null || true
+# git tourne sous l'identite du proprietaire du depot, pas en root : un
+# « git fetch » ou un « git merge » lances en root deposent dans .git des
+# fichiers appartenant a root, et les commandes git ordinaires de l'utilisateur
+# echouent ensuite (« insufficient permission for adding an object »).
+PROPRIETAIRE="$(stat -c %U "${SOURCE}" 2>/dev/null || echo root)"
+git() {
+    if [ "${PROPRIETAIRE}" != "root" ] && command -v runuser >/dev/null 2>&1; then
+        runuser -u "${PROPRIETAIRE}" -- git -C "${SOURCE}" "$@"
+    else
+        command git -C "${SOURCE}" "$@"
+    fi
+}
+
+# Un depot appartenant a root (clone fait en root) : git refuserait d'y
+# travailler sans cette exception.
+if [ "${PROPRIETAIRE}" = "root" ]; then
+    command git config --global --get-all safe.directory 2>/dev/null | grep -qxF "${SOURCE}" || \
+        command git config --global --add safe.directory "${SOURCE}" 2>/dev/null || true
+fi
+
+# Fichiers deja passes a root par une version precedente de ce script : on les
+# rend a leur proprietaire, sans quoi ses propres commandes git echouent.
+if [ "${PROPRIETAIRE}" != "root" ] && [ -d "${SOURCE}/.git" ]; then
+    if [ -n "$(find "${SOURCE}/.git" -user root -print -quit 2>/dev/null)" ]; then
+        chown -R "${PROPRIETAIRE}:" "${SOURCE}/.git" 2>/dev/null && \
+            blocker_info "$(m "fichiers de .git rendus a" "files in .git given back to") ${PROPRIETAIRE}"
+    fi
+fi
 
 cd "${SOURCE}" || { blocker_err "$(m "impossible d'entrer dans" "cannot enter") ${SOURCE}"; exit 1; }
 

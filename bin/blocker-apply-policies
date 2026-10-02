@@ -112,7 +112,9 @@ while IFS='|' read -r dir filename family; do
     [ -e "${dst}" ] && before="present"
 
     if blocker_install_protected "${src}" "${dst}" 0644; then
-        if [ "${before}" = "absent" ]; then
+        if [ "${before}" = "absent" ] && [ -n "${BLOCKER_EN_CONFIGURATION:-}" ]; then
+            blocker_info "$(m "policy" "policy") ${family} $(m "deployee" "deployed") : ${dst}"
+        elif [ "${before}" = "absent" ]; then
             blocker_repair "$(m "policy" "policy") ${family} $(m "deployee" "deployed") : ${dst}"
         fi
         deployed=$((deployed + 1))

@@ -140,8 +140,15 @@ sonde_amont() {
     [ "$(id -u)" -eq 0 ] || return 4
     command -v dig >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1 || return 4
     getent passwd "${BLOCKER_USER}" >/dev/null 2>&1 || return 4
-    r="$(runuser -u "${BLOCKER_USER}" -- dig +short +time=3 +tries=2 "@${BLOCKER_UPSTREAM_1}" example.com 2>/dev/null \
-         | grep -E '^[0-9.]+$' | head -1)"
+    # Trois essais espaces : sur une ligne lente ou saturee (par exemple
+    # pendant la premiere mise a jour des listes), un seul essai echoue souvent.
+    local essai
+    for essai in 1 2 3; do
+        r="$(runuser -u "${BLOCKER_USER}" -- dig +short +time=4 +tries=1 "@${BLOCKER_UPSTREAM_1}" example.com 2>/dev/null \
+             | grep -E '^[0-9.]+$' | head -1)"
+        [ -n "${r}" ] && break
+        sleep 2
+    done
     [ -n "${r}" ] || return 2
     while IFS= read -r d; do
         [ -n "${d}" ] || continue
@@ -273,7 +280,10 @@ if [ "${MODE}" = "sonde" ]; then
             *) n_ko=$((n_ko + 1)) ;;
         esac
     done < <(echantillon_adulte 5)
-    if [ "${n_tot}" -eq 0 ]; then
+    if [ "${n_tot}" -eq 0 ] && systemctl is-active --quiet blocker-list-update.service 2>/dev/null; then
+        moyen "$(m "liste adulte" "adult list")" "$(m "telechargement en cours, relancer la sonde ensuite" "download in progress, run the probe again afterwards")"
+        detail "journalctl -f -u blocker-list-update"
+    elif [ "${n_tot}" -eq 0 ]; then
         moyen "$(m "liste adulte" "adult list")" "$(m "absente : sudo systemctl start blocker-list-update" "missing: sudo systemctl start blocker-list-update")"
     elif [ "${n_ko}" -gt 0 ]; then
         ko "$(m "liste adulte" "adult list")" "${n_ko}/${n_tot} $(m "RESOLVENT" "RESOLVE")"
@@ -292,7 +302,10 @@ if [ "${MODE}" = "sonde" ]; then
         0) ok "${BLOCKER_UPSTREAM_1}" "$(m "filtre" "filtering") (${SONDE_AMONT_DETAIL} $(m "bloques" "blocked"))" ;;
         1) ko "${BLOCKER_UPSTREAM_1}" "$(m "NE FILTRE PAS : amont change, ou DNS detourne par le reseau" \
                                             "NOT FILTERING: upstream changed, or DNS hijacked by the network")" ;;
-        2) ko "${BLOCKER_UPSTREAM_1}" "$(m "ne repond pas" "does not answer")" ;;
+        2) moyen "${BLOCKER_UPSTREAM_1}" "$(m "pas de reponse en trois essais" "no answer in three tries")"
+           detail "$(m "ligne lente ou saturee (mise a jour des listes en cours ?), ou port 53 filtre par le reseau ;" \
+                      "slow or saturated link (list update running?), or port 53 filtered by the network;")"
+           detail "$(m "relancer la sonde dans quelques minutes" "run the probe again in a few minutes")" ;;
         3) moyen "${BLOCKER_UPSTREAM_1}" "$(m "non concluant" "inconclusive") (${SONDE_AMONT_DETAIL})" ;;
         *) moyen "${BLOCKER_UPSTREAM_1}" "$(m "non verifiable (root et liste adulte requis)" "cannot check (root and adult list required)")" ;;
     esac

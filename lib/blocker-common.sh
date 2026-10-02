@@ -416,7 +416,11 @@ blocker_install_protected() {
 
     blocker_unlock_file "$dst"
     install -m "$mode" "$src" "$dst"
-    blocker_repair "$(m "fichier reecrit depuis le modele" "file rewritten from the template") : $dst"
+    if [ -n "${BLOCKER_EN_CONFIGURATION:-}" ]; then
+        blocker_info "$(m "fichier mis a jour depuis le modele" "file updated from the template") : $dst"
+    else
+        blocker_repair "$(m "fichier reecrit depuis le modele" "file rewritten from the template") : $dst"
+    fi
     blocker_lock_file "$dst" silencieux
 }
 

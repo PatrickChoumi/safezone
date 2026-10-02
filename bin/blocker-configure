@@ -17,6 +17,11 @@ blocker_require_root
 
 step() { blocker_info "== $* =="; }
 
+# Pendant la configuration, reecrire un fichier depuis un modele qui a change
+# est une mise a jour, pas une reparation : le journal (et le rapport
+# hebdomadaire) ne doit pas compter chaque installation comme une alerte.
+export BLOCKER_EN_CONFIGURATION=1
+
 # ---------------------------------------------------------------------------
 # 0. Utilisateur systeme
 # ---------------------------------------------------------------------------
@@ -261,9 +266,14 @@ if systemctl list-unit-files nftables.service >/dev/null 2>&1; then
 fi
 
 # Ordre volontaire : le resolveur d'abord, la garde ensuite.
-systemctl enable --now blocker-resolver.service || \
+# « restart » et pas « enable --now » : sur une installation existante, les
+# services tournent deja, et « --now » ne les relance pas. dnsmasq ne relirait
+# alors ni les nouvelles listes ni les nouvelles categories, et la garde
+# continuerait d'executer l'ancien code jusqu'au prochain redemarrage.
+systemctl enable blocker-resolver.service blocker-guard.service >/dev/null 2>&1
+systemctl restart blocker-resolver.service || \
     blocker_err "$(m "blocker-resolver.service n'a pas demarre" "blocker-resolver.service did not start") — journalctl -u blocker-resolver"
-systemctl enable --now blocker-guard.service || \
+systemctl restart blocker-guard.service || \
     blocker_err "$(m "blocker-guard.service n'a pas demarre" "blocker-guard.service did not start") — journalctl -u blocker-guard"
 systemctl enable --now blocker-selfheal.timer || \
     blocker_warn "blocker-selfheal.timer $(m "non arme" "not armed")"
