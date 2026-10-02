@@ -230,6 +230,21 @@ table inet blocker_adulte {
         }
     }
 
+    # Adresses des categories actives (blocker-categories) : services dont
+    # l'application se connecte sans passer par le DNS — Telegram. Remplis au
+    # chargement depuis /var/lib/blocker-adulte/nft/categories.nft.
+    set categories_ipv4 {
+        type ipv4_addr
+        flags interval
+        auto-merge
+    }
+
+    set categories_ipv6 {
+        type ipv6_addr
+        flags interval
+        auto-merge
+    }
+
     chain output {
         type filter hook output priority filter; policy accept;
 
@@ -252,6 +267,12 @@ table inet blocker_adulte {
         tcp dport 443 ip6 daddr @doh_ipv6 reject with tcp reset comment "DoH bloque"
         udp dport 443 ip daddr @doh_ipv4 drop comment "DoH/QUIC bloque"
         udp dport 443 ip6 daddr @doh_ipv6 drop comment "DoH/QUIC bloque"
+
+        # Services bloques par categorie, tous ports confondus.
+        meta l4proto tcp ip daddr @categories_ipv4 reject with tcp reset comment "categorie bloquee"
+        meta l4proto tcp ip6 daddr @categories_ipv6 reject with tcp reset comment "categorie bloquee"
+        ip daddr @categories_ipv4 drop comment "categorie bloquee"
+        ip6 daddr @categories_ipv6 drop comment "categorie bloquee"
     }
 
     # Meme politique pour le trafic relaye.
@@ -265,5 +286,7 @@ table inet blocker_adulte {
         tcp dport 443 ip6 daddr @doh_ipv6 reject with tcp reset
         udp dport 443 ip daddr @doh_ipv4 drop
         udp dport 443 ip6 daddr @doh_ipv6 drop
+        ip daddr @categories_ipv4 drop
+        ip6 daddr @categories_ipv6 drop
     }
 }

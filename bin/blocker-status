@@ -670,6 +670,29 @@ esac
 detail "$(m "le mot de passe BIOS/UEFI ne se verifie pas depuis le systeme" \
            "the BIOS/UEFI password cannot be checked from the system")"
 
+# --- Code installe -----------------------------------------------------------
+# Lecture seule : la comparaison fichier par fichier, et la restauration, sont
+# faites par le self-heal et la garde.
+attendue="$(cat "${BLOCKER_STATEDIR}/conf/code-empreinte" 2>/dev/null)"
+C_CODE="$(m "Code installe" "Installed code")"
+if [ -z "${attendue}" ]; then
+    moyen "${C_CODE}" "$(m "aucune empreinte enregistree" "no fingerprint recorded")"
+elif [ "$(blocker_code_empreinte)" = "${attendue}" ]; then
+    ok "${C_CODE}" "$(m "conforme a l'installation" "matches the installation") (${attendue})"
+else
+    ko "${C_CODE}" "$(m "MODIFIE depuis l'installation" "MODIFIED since installation")"
+    trou "$(m "Le code de l'outil a ete modifie : le self-heal le restaure sous 5 minutes." \
+             "The tool's code was modified: self-heal restores it within 5 minutes.")"
+fi
+
+# --- /etc/hosts ----------------------------------------------------------------
+hosts_bloques="$(blocker_hosts_contournements | tr '\n' ' ' | sed 's/ $//')"
+if [ -n "${hosts_bloques}" ]; then
+    ko "/etc/hosts" "$(m "fait resoudre des domaines bloques" "resolves blocked domains")"
+    trou "$(m "/etc/hosts fait resoudre des domaines bloques, avant le resolveur : retirer ces lignes" \
+             "/etc/hosts resolves blocked domains, before the resolver: remove these lines") (${hosts_bloques})."
+fi
+
 # --- Fichiers mis en quarantaine ---------------------------------------------
 if [ -d "${BLOCKER_QUARANTAINE}" ] && [ -n "$(ls -A "${BLOCKER_QUARANTAINE}" 2>/dev/null)" ]; then
     detail "$(m "fichiers mis en quarantaine par le self-heal :" "files quarantined by self-heal:") $(ls "${BLOCKER_QUARANTAINE}" | wc -l) ($(printf '%s' "${BLOCKER_QUARANTAINE}"))"

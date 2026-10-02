@@ -125,6 +125,11 @@ while true; do
     fi
 
     blocker_reparer_retrait_non_autorise || true
+    # Code installe : toutes les 20 passes (5 minutes avec le reglage par
+    # defaut). La garde surveille ainsi le self-heal, qui la surveille.
+    if [ $((pass % 20)) -eq 1 ]; then
+        blocker_code_verifier || true
+    fi
     verifier_resolveur
     verifier_nftables
     verifier_policies

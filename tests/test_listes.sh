@@ -113,6 +113,29 @@ v6="$(printf '%s\n' '2606:4700::1111 # x' 'fe80::1' '::1' 'fd00::1' '2001:db8::/
 [ "${v6}" = "2606:4700::1111 " ] && ok "IPv6 : lien-local, bouclage, ULA et prefixes larges ecartes" \
                                  || ko "IPv6 filtrees : « ${v6} »"
 
+titre "5 bis. Categories livrees"
+CATS="${DEPOT}/share/categories"
+[ -d "${CATS}" ] || CATS=/usr/share/blocker-adulte/categories
+for f in "${CATS}"/*.liste; do
+    [ -r "${f}" ] || continue
+    grep -vE '^[[:space:]]*ip(-url)?[[:space:]]' "${f}" > "${BAC}/cat"
+    blocker_convertir_liste "${BAC}/cat" "${BAC}/cat.conf"
+    r="$(blocker_conversion_rejets "${BAC}/cat.conf")"
+    n="$(wc -l < "${BAC}/cat.conf")"
+    if [ "${r}" -eq 0 ] && [ "${n}" -gt 0 ]; then
+        ok "$(basename "${f}") : ${n} domaines, aucune ligne rejetee"
+    else
+        ko "$(basename "${f}") : ${r} ligne(s) rejetee(s)"
+    fi
+    ips="$(sed -n 's/^ip[[:space:]]\{1,\}//p' "${f}")"
+    if [ -n "${ips}" ]; then
+        n_ok="$( { printf '%s\n' "${ips}" | blocker_filtrer_ip 4; printf '%s\n' "${ips}" | blocker_filtrer_ip 6; } | wc -l)"
+        [ "${n_ok}" -eq "$(printf '%s\n' "${ips}" | wc -l)" ] \
+            && ok "$(basename "${f}") : ${n_ok} prefixes IP valides" \
+            || ko "$(basename "${f}") : prefixes IP ecartes par le filtre"
+    fi
+done
+
 titre "6. La sortie est une configuration dnsmasq valide"
 if command -v dnsmasq >/dev/null 2>&1; then
     if dnsmasq --test --conf-file="${BAC}/sortie" >/dev/null 2>&1; then

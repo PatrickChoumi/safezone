@@ -211,6 +211,14 @@ if ! make -C "${SOURCE}" check 2>&1 | tail -5 | sed 's/^/  /'; then
     exit 1
 fi
 
+# Le controle d'integrite du code se suspend le temps de l'installation : sans
+# cela, la garde pourrait remettre l'ancien code entre « make install » et la
+# configuration, qui enregistre le nouveau.
+blocker_ensure_rundir
+date -Is > "${BLOCKER_MAJ_FLAG}"
+blocker_historique "mise a jour du code : ${LOCAL:0:8} -> ${DISTANT:0:8}" "blocker-update"
+blocker_notifier "$(m "mise a jour du code de l'outil" "tool code update") : ${LOCAL:0:8} -> ${DISTANT:0:8}"
+
 blocker_info "$(m "installation des fichiers" "installing the files")"
 if ! make -C "${SOURCE}" install DESTDIR=/ >/dev/null 2>&1; then
     blocker_err "$(m "« make install » a echoue" "« make install » failed")"

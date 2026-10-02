@@ -59,6 +59,7 @@ fi
 # blocker-update ne doit pas devenir un raccourci autour du delai.
 step "$(m "configuration en vigueur" "configuration in force")"
 blocker_adopter_etat
+blocker_ajouter_nouveautes
 # La configuration en vigueur vient peut-etre d'etre posee : on la relit.
 # shellcheck disable=SC1090
 [ -r "${BLOCKER_CONF_EN_VIGUEUR}" ] && . "${BLOCKER_CONF_EN_VIGUEUR}"
@@ -303,6 +304,11 @@ if [ -z "${BLOCKER_RAPPORT_DESTINATAIRE:-}" ]; then
                       "no trusted person receives the weekly report:")"
     blocker_warn "  $(m "renseigner BLOCKER_RAPPORT_DESTINATAIRE dans" "set BLOCKER_RAPPORT_DESTINATAIRE in") ${BLOCKER_CONF}"
 fi
+
+# Le code installe est recopie dans la reserve : le self-heal et la garde le
+# comparent ensuite, et restaurent ce qui serait modifie a la main.
+step "$(m "empreinte du code installe" "fingerprint of the installed code")"
+blocker_code_enregistrer
 
 blocker_info "$(m "configuration terminee. Etat" "configuration finished. Status") : blocker-status"
 blocker_info "$(m "ce qui affaiblit la protection attend" "whatever weakens the protection waits") ${BLOCKER_DELAI_HEURES} h : blocker-delai"

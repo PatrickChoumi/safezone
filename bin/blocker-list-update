@@ -186,7 +186,9 @@ else
 fi
 
 # --- Categories (moteurs sans filtre, interfaces alternatives) ---------------
-/usr/lib/blocker-adulte/blocker-categories >/dev/null 2>&1
+# --reseau : les categories qui publient leurs adresses en ligne (Telegram)
+# sont rafraichies une fois par jour, ici, plutot qu'a chaque passe.
+/usr/lib/blocker-adulte/blocker-categories --reseau >/dev/null 2>&1
 case "$?" in
     0|3) ;;
     *) blocker_warn "$(m "generation des categories en echec" "generating the categories failed")" ;;

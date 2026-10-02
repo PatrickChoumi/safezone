@@ -365,6 +365,12 @@ for script in "${SCRIPTS[@]}"; do
         case "${emplacement}" in
             /usr/lib/blocker-adulte/*|/usr/share/blocker-adulte/*) continue ;;
         esac
+        # Copie de controle du code, declaree comme telle dans le manifeste :
+        # c'est d'elle que le self-heal restaure un script modifie.
+        case "${emplacement}" in
+            /var/lib/blocker-adulte/reserve/code/*)
+                if grep -qxF /var/lib/blocker-adulte/reserve/code "${MANIFESTE}"; then continue; fi ;;
+        esac
 
         # /usr/sbin accueille volontairement les commandes destinees a root.
         # Lesquelles ? On le demande au manifeste plutot que de les nommer ici :

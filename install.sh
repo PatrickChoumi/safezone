@@ -188,6 +188,12 @@ fi
 # 3. Pose des fichiers
 # ---------------------------------------------------------------------------
 log "$(m "pose des fichiers (make install)" "installing files (make install)")"
+# Une installation par-dessus une installation existante remplace le code avant
+# de le reenregistrer : le controle d'integrite est suspendu entre les deux.
+if [ "${DRY_RUN}" -eq 0 ] && [ -d /usr/lib/blocker-adulte ]; then
+    mkdir -p /run/blocker-adulte
+    date -Is > /run/blocker-adulte/mise-a-jour-en-cours
+fi
 run make -C "${SRC}" install DESTDIR=/
 
 # ---------------------------------------------------------------------------

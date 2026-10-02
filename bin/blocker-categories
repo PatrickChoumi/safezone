@@ -2,24 +2,35 @@
 # blocker-adulte — categories de blocage livrees avec l'outil (composant 1)
 #
 # Installe dans : /usr/lib/blocker-adulte/blocker-categories
-# Lance par     : blocker-configure, blocker-list-update, blocker-selfheal
+# Lance par     : blocker-configure, blocker-list-update (avec --reseau),
+#                 blocker-selfheal
 #
-# Une categorie est une liste de domaines livree dans
+# Une categorie est une liste livree dans
 # /usr/share/blocker-adulte/categories/<nom>.liste. Les categories actives sont
-# celles de BLOCKER_CATEGORIES dans blocker.conf ; chacune devient
-# /var/lib/blocker-adulte/blocklists/30-categorie-<nom>.conf.
+# celles de BLOCKER_CATEGORIES dans blocker.conf ; toutes le sont d'office.
 #
-# Deux categories existent :
-#   moteurs-sans-filtre    moteurs de recherche dont le mode strict ne peut
-#                          pas etre force par le DNS (Brave Search, Yahoo,
-#                          Startpage, Ecosia, Qwant...)
+#   moteurs-sans-filtre    moteurs dont le mode strict ne peut pas etre force
 #   frontends-alternatifs  interfaces alternatives de YouTube et de Reddit
+#   reseaux-sociaux        Reddit, X, Bluesky, Tumblr, Telegram
+#   chat-video             discussion video avec des inconnus
+#   streaming              MovieBox et applications du meme genre
 #
-# Elles ne contiennent aucun domaine adulte : ce sont des chemins de
-# contournement du SafeSearch, pas du contenu.
+# Trois sortes de lignes dans une categorie :
+#   domaine          bloque par le resolveur, sous-domaines compris
+#                    -> blocklists/30-categorie-<nom>.conf
+#   ip <prefixe>     bloque au niveau reseau, pour les applications qui se
+#                    connectent sans DNS (Telegram) -> nft/categories.nft
+#   ip-url <https>   liste de prefixes publiee par le service lui-meme ;
+#                    recuperee seulement avec --reseau (mise a jour quotidienne),
+#                    et toujours REUNIE aux prefixes ecrits en dur : une liste
+#                    en ligne injoignable ou tronquee ne retire rien.
+#
+# Aucune ne contient de domaine adulte.
 #
 # Retirer une categorie affaiblit la protection : la modification de
 # blocker.conf attend le delai avant de s'appliquer.
+#
+# Code de sortie 3 : quelque chose a change (l'appelant redemarre le resolveur).
 
 set -uo pipefail
 
@@ -27,12 +38,18 @@ set -uo pipefail
 
 blocker_require_root
 
+RESEAU=0
+[ "${1:-}" = "--reseau" ] && RESEAU=1
+
 SOURCES="${BLOCKER_SHAREDIR}/categories"
+CACHE="${BLOCKER_STATEDIR}/cache"
+SORTIE_NFT="${BLOCKER_NFTDIR}/categories.nft"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 declare -A actives=()
 change=0
+: > "${WORK}/ip"
 
 for nom in ${BLOCKER_CATEGORIES:-}; do
     case "${nom}" in
@@ -44,14 +61,35 @@ for nom in ${BLOCKER_CATEGORIES:-}; do
         continue
     fi
     actives["${nom}"]=1
+
+    # --- Adresses IP ----------------------------------------------------------
+    sed -n 's/^ip[[:space:]]\{1,\}//p' "${src}" > "${WORK}/ip-${nom}"
+    while IFS= read -r url; do
+        [ -n "${url}" ] || continue
+        cache="${CACHE}/categorie-${nom}-$(printf '%s' "${url}" | sha256sum | cut -c1-8).ip"
+        if [ "${RESEAU}" -eq 1 ]; then
+            install -d -m 0755 "${CACHE}"
+            if curl --fail --silent --location --max-time 60 --user-agent "blocker-adulte/1.0" \
+                    --output "${WORK}/ip-url" "${url}" 2>/dev/null; then
+                { blocker_filtrer_ip 4 < "${WORK}/ip-url"; blocker_filtrer_ip 6 < "${WORK}/ip-url"; } \
+                    > "${WORK}/ip-url-filtre"
+                [ -s "${WORK}/ip-url-filtre" ] && cp "${WORK}/ip-url-filtre" "${cache}"
+            fi
+        fi
+        [ -r "${cache}" ] && cat "${cache}" >> "${WORK}/ip-${nom}"
+    done < <(sed -n 's/^ip-url[[:space:]]\{1,\}\(https:\/\/[^[:space:]]*\).*/\1/p' "${src}")
+    { blocker_filtrer_ip 4 < "${WORK}/ip-${nom}"; blocker_filtrer_ip 6 < "${WORK}/ip-${nom}"; } >> "${WORK}/ip"
+
+    # --- Domaines ---------------------------------------------------------------
     cible="${BLOCKER_LISTDIR}/30-categorie-${nom}.conf"
+    grep -vE '^[[:space:]]*ip(-url)?[[:space:]]' "${src}" > "${WORK}/domaines"
+    blocker_convertir_liste "${WORK}/domaines" "${WORK}/corps" "${BLOCKER_EXCEPTIONS}"
+    blocker_conversion_rejets "${WORK}/corps" >/dev/null
     {
         printf '# blocker-adulte — categorie %s (generee, ne pas modifier)\n' "${nom}"
         printf '# Source : %s\n' "${src}"
-    } > "${WORK}/entete"
-    blocker_convertir_liste "${src}" "${WORK}/corps" "${BLOCKER_EXCEPTIONS}"
-    blocker_conversion_rejets "${WORK}/corps" >/dev/null
-    cat "${WORK}/entete" "${WORK}/corps" > "${WORK}/${nom}.conf"
+        cat "${WORK}/corps"
+    } > "${WORK}/${nom}.conf"
 
     if [ -e "${cible}" ] && cmp -s "${WORK}/${nom}.conf" "${cible}" && \
        [ -e "${BLOCKER_RESERVEDIR}/blocklists/30-categorie-${nom}.conf" ]; then
@@ -72,7 +110,29 @@ for f in "${BLOCKER_LISTDIR}"/30-categorie-*.conf; do
     fi
 done
 
-# Code 3 : quelque chose a change, le resolveur doit etre redemarre. L'appelant
-# decide quand, pour ne pas le redemarrer plusieurs fois de suite.
+# --- Jeu d'adresses nftables ----------------------------------------------------
+# Une seule commande par famille : deux « add element » qui se recouvrent dans
+# la meme transaction font echouer nft sur un jeu en « auto-merge ».
+LC_ALL=C sort -u "${WORK}/ip" -o "${WORK}/ip"
+v4="$(grep -v ':' "${WORK}/ip" | paste -sd, - | sed 's/,/, /g')"
+v6="$(grep ':' "${WORK}/ip" | paste -sd, - | sed 's/,/, /g')"
+{
+    printf '# blocker-adulte — adresses des categories actives (genere, ne pas modifier)\n'
+    printf '# Categories : %s\n' "${!actives[*]}"
+    [ -n "${v4}" ] && printf 'add element inet blocker_adulte categories_ipv4 { %s }\n' "${v4}"
+    [ -n "${v6}" ] && printf 'add element inet blocker_adulte categories_ipv6 { %s }\n' "${v6}"
+} > "${WORK}/categories.nft"
+
+# La ligne « Categories » depend de l'ordre d'un tableau associatif : on compare
+# sans elle pour ne pas republier a chaque passe.
+if ! cmp -s <(grep -v '^# Categories' "${WORK}/categories.nft") <(grep -v '^# Categories' "${SORTIE_NFT}" 2>/dev/null) || \
+   [ ! -e "${BLOCKER_RESERVEDIR}/nft/categories.nft" ]; then
+    if blocker_publier "${WORK}/categories.nft" "${SORTIE_NFT}"; then
+        /usr/lib/blocker-adulte/blocker-apply-nftables >/dev/null 2>&1 || \
+            blocker_warn "$(m "rechargement des regles nftables en echec" "reloading the nftables rules failed")"
+        change=1
+    fi
+fi
+
 [ "${change}" -eq 1 ] && exit 3
 exit 0

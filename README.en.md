@@ -292,8 +292,18 @@ Highlights of the latest hardening, detailed in `README.md`:
   reloaded with the rules;
 - **self-heal**: every state file has a reserve copy; a hand edit is restored
   (added blocks are accepted), an unknown file in `blocklists/` is quarantined;
-- **categories**: search engines whose strict mode cannot be forced by DNS, and
-  alternative YouTube and Reddit front-ends, blocked by default.
+- **categories, all on by default**: `reseaux-sociaux` (Reddit, X, Bluesky,
+  Tumblr, Telegram — including the Telegram app, blocked by IP range),
+  `streaming` (MovieBox and similar apps), `chat-video` (Omegle clones),
+  `moteurs-sans-filtre` (search engines whose strict mode cannot be forced by
+  DNS), `frontends-alternatifs` (alternative YouTube and Reddit front-ends).
+  Pirate streaming sites are covered by the Hagezi *anti.piracy* list,
+  downloaded daily. Removing a category waits for the delay;
+- **installed code**: copied to the reserve at install time; self-heal and the
+  guard restore any script edited by hand. Each code change is logged and
+  reported, and `blocker-update` notifies the trusted person;
+- **/etc/hosts**: never rewritten, but a line resolving a blocked domain is
+  reported.
 
 ### Enforced SafeSearch — the most effective measure in the tool
 
@@ -393,6 +403,8 @@ Summary of the top-level locations:
 /usr/lib/systemd/system/blocker-*.{service,timer,path}
 /etc/blocker-adulte/              proposed configuration, SMTP secret
 /var/lib/blocker-adulte/          lists, configuration in force, requests, reserve, reports
+                                  (reserve/code: verbatim copy of the installed code,
+                                  used to restore a script edited by hand)
 /run/blocker-adulte/              runtime
 ```
 
@@ -476,9 +488,12 @@ removed. What remains are structural limits, stated without instructions:
 - adult content **inside** general-purpose platforms (Reddit, X, Tumblr) is not
   covered by the lists — that is what `blocker-block` is for:
 
+Reddit, X, Bluesky, Tumblr and Telegram are already blocked by default. For
+another platform:
+
 ```bash
-sudo blocker-block reddit.com x.com    # block these and all their subdomains, at once
-sudo blocker-block --liste             # show your personal list
+sudo blocker-block instagram.com discord.com   # block these and all their subdomains, at once
+sudo blocker-block --liste                     # show your personal list
 ```
 
 ---

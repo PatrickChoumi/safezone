@@ -348,7 +348,7 @@ délai, et le destinataire actuel en est prévenu.
 
 | # | Composant | Rôle | Se relève grâce à |
 |---|---|---|---|
-| 1 | **Résolveur DNS local** | `dnsmasq` sur `127.0.0.1:53`, listes StevenBlack *porn-only* + Hagezi *doh-vpn-proxy-bypass*, catégories livrées, **SafeSearch forcé**, amont filtrant en secours | 6, 7 |
+| 1 | **Résolveur DNS local** | `dnsmasq` sur `127.0.0.1:53`, listes StevenBlack *porn-only* + Hagezi *doh-vpn-proxy-bypass* et *anti.piracy*, catégories livrées (Reddit, X, Telegram, MovieBox…), **SafeSearch forcé**, amont filtrant en secours | 6, 7 |
 | 2 | **Application réseau forcée** | `systemd-resolved` → `127.0.0.1`, DNAT nftables du port 53, rejet DoT/DoQ/DoH (liste communautaire d'adresses), dispatcher NetworkManager | 4, 6, 7 |
 | 3 | **Policies navigateur** | Un fichier indépendant par navigateur détecté (Firefox et dérivés, Chrome, Chromium, Brave, Edge, Vivaldi) | 5, 6, 7 |
 | 4 | **Hook initramfs** | Règles nftables de base chargées avant le montage de la racine, actives en mode recovery | — (regénéré à l'installation) |
@@ -386,11 +386,28 @@ Trois règles tiennent la mise à jour :
 
 | Catégorie | Contenu |
 |---|---|
+| `reseaux-sociaux` | **Reddit, X (Twitter), Bluesky, Tumblr, Telegram.** Pour Telegram, dont l'application se connecte par adresse IP sans passer par le DNS, les plages publiées par Telegram sont aussi bloquées au niveau réseau (nftables), et rafraîchies chaque jour depuis `core.telegram.org` |
+| `streaming` | **MovieBox** (tous ses domaines connus) et les applications du même genre |
+| `chat-video` | Discussion vidéo avec des inconnus : Omegle et ses clones, Chatroulette, OmeTV… |
 | `moteurs-sans-filtre` | Moteurs dont le mode strict ne peut pas être forcé par le DNS : Brave Search, Yahoo, Startpage, Ecosia, Qwant, Mojeek… |
 | `frontends-alternatifs` | Interfaces alternatives de YouTube (Invidious, Piped) et de Reddit (Redlib, Libreddit, Teddit), et les services qui redirigent vers une instance |
 
-Toutes deux actives par défaut (`BLOCKER_CATEGORIES`). En retirer une est
-soumis au délai.
+**Toutes sont actives d'office** (`BLOCKER_CATEGORIES`). En retirer une est
+soumis au délai ; en ajouter s'applique tout de suite. Une catégorie ajoutée
+aux valeurs par défaut dans une version future est ajoutée une fois, à la mise
+à jour, à une installation existante — un retrait fait ensuite par le délai est
+respecté.
+
+Les grands sites de **streaming et de téléchargement pirates** (fmovies,
+123movies, soap2day, french-stream, coflix, wiflix…) changent de domaine sans
+cesse : ils sont couverts par la liste communautaire Hagezi *anti.piracy*
+(plus de 50 000 domaines), téléchargée chaque jour avec les autres.
+
+Pour bloquer d'autres plateformes, tout de suite :
+
+```bash
+sudo blocker-block discord.com instagram.com tiktok.com
+```
 
 `filter-rr=65` bloque les enregistrements HTTPS/SVCB, qui annoncent aux
 navigateurs les points d'accès DoH disponibles.
@@ -618,6 +635,20 @@ réserve sous `/var/lib/blocker-adulte/reserve`. Une différence avec la réserv
 est une modification faite à la main : restaurée (des blocages *ajoutés* sont
 acceptés). Un fichier inconnu dans `blocklists/` — tout `.conf` y est lu par le
 résolveur — est mis en **quarantaine**, jamais détruit.
+
+**Code installé.** Modifier une ligne d'un script de surveillance était le
+moyen le plus court de neutraliser l'outil : rien ne vérifiait le code
+lui-même. Chaque installation ou mise à jour recopie le code installé dans la
+réserve ; le self-heal et la garde (qui se surveillent l'un l'autre) le
+comparent et restaurent ce qui a changé. `blocker-update`, `install.sh` et le
+paquet suspendent ce contrôle le temps de remplacer le code, au plus 30
+minutes. Chaque changement d'empreinte du code est inscrit au journal des
+demandes, donc au rapport, et `blocker-update` prévient la personne de
+confiance.
+
+**`/etc/hosts`.** Son contenu n'est jamais réécrit, mais une ligne qui y fait
+résoudre un domaine bloqué est signalée à chaque passe, par `blocker-status` et
+dans le rapport.
 
 Chaque écart est journalisé **avec son détail** avant d'être corrigé. Un
 compte-rendu est écrit à chaque passe, même quand rien n'a bougé : un watchdog
@@ -875,6 +906,10 @@ existe sans être déclaré ici.
 # en vigueur, exceptions), delai/ (demandes et leur journal), reserve/ (copies
 # de contrôle), rapports/, quarantaine/.
 /var/lib/blocker-adulte
+# Copie à l'identique du code installé, seule copie des exécutables hors de
+# /usr : le self-heal et la garde s'en servent pour restaurer un script
+# modifié à la main. Réécrite à chaque installation ou mise à jour.
+/var/lib/blocker-adulte/reserve/code
 /run/blocker-adulte
 ```
 <!-- MANIFEST-FIN -->
@@ -1195,6 +1230,9 @@ dire comment en tirer parti.
 | Extension VPN ou proxy de navigateur | **Bloqué** — permission `proxy` refusée, installation d'extensions interdite (Firefox), proxy verrouillé |
 | Tor Browser, VPN système en configuration par défaut | **Bloqué** — table `blocker_adulte_tunnels` |
 | Moteurs sans mode strict, interfaces alternatives de YouTube et Reddit | **Bloqué** — catégories livrées |
+| Reddit, X, Bluesky, Tumblr, Telegram (site et application), MovieBox, chat vidéo aléatoire | **Bloqué** — catégories livrées, actives d'office |
+| Sites de streaming pirates | **Bloqué** — liste Hagezi *anti.piracy*, mise à jour chaque jour |
+| Modifier un script de l'outil | **Restauré** par le self-heal ou la garde |
 | Ligne ajoutée dans `/etc/hosts` | **Bloqué** si `BLOCKER_LOCK_HOSTS` verrouille, sinon tracé par auditd |
 | Modifier une liste, un fichier de configuration, une règle nftables | **Restauré** par le self-heal, tracé, résumé dans le rapport |
 | Désactiver un service ou désinstaller | **Différé** — demande, délai, personne de confiance prévenue |
@@ -1214,10 +1252,13 @@ réseau.
 
 Si l'une de ces plateformes est un point de vulnérabilité pour vous :
 
+Reddit, X, Bluesky, Tumblr et Telegram sont bloqués d'office (catégorie
+`reseaux-sociaux`). Pour une autre plateforme :
+
 ```bash
-sudo blocker-block reddit.com        # bloque le domaine et ses sous-domaines, tout de suite
+sudo blocker-block instagram.com     # bloque le domaine et ses sous-domaines, tout de suite
 sudo blocker-block --liste           # voir votre liste
-sudo blocker-block --retirer reddit.com   # une demande, soumise au délai
+sudo blocker-block --retirer instagram.com   # une demande, soumise au délai
 ```
 
 La liste vit dans `/var/lib/blocker-adulte/blocklists/50-perso.conf` et n'est

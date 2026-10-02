@@ -1,3 +1,16 @@
+blocker-adulte (1.2.0) unstable; urgency=medium
+
+  * Blocage d office : Reddit, X, Bluesky, Tumblr, Telegram (site et
+    application, par plages d adresses), MovieBox et applications du meme
+    genre, chat video aleatoire, et liste Hagezi anti.piracy.
+  * Nouveaux blocages par defaut ajoutes une fois aux installations
+    existantes a la mise a jour.
+  * Integrite du code installe : copie de controle, restauration par le
+    self-heal et la garde ; mise a jour journalisee et signalee.
+  * /etc/hosts : ligne faisant resoudre un domaine bloque signalee.
+
+ -- blocker-adulte <root@localhost>  Fri, 02 Oct 2026 19:30:00 +0000
+
 blocker-adulte (1.1.0) unstable; urgency=medium
 
   * Delai sur tout ce qui affaiblit la protection (blocker-delai) : retrait

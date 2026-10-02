@@ -37,8 +37,9 @@ set -uo pipefail
 RULES_FILE="/etc/nftables/blocker-adulte.nft"
 TUNNELS_FILE="/etc/nftables/blocker-adulte-tunnels.nft"
 # Adresses chargees avec les regles : amonts choisis dans blocker.conf
-# (blocker-upstream) et resolveurs DoH (blocker-doh-refresh).
-ELEMENTS="${BLOCKER_NFTDIR}/amonts.nft ${BLOCKER_NFTDIR}/doh.nft"
+# (blocker-upstream), resolveurs DoH (blocker-doh-refresh), services bloques
+# par categorie (blocker-categories).
+ELEMENTS="${BLOCKER_NFTDIR}/amonts.nft ${BLOCKER_NFTDIR}/doh.nft ${BLOCKER_NFTDIR}/categories.nft"
 
 # Le blocage des tunnels est le seul jeu de regles susceptible de gener un
 # usage legitime (VPN d'entreprise). Il vit dans une table separee, chargee ou

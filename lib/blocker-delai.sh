@@ -64,10 +64,11 @@ blocker_conf_defaut() {
         BLOCKER_SAFESEARCH)      printf 'oui' ;;
         BLOCKER_BLOCK_TUNNELS)   printf 'oui' ;;
         BLOCKER_LIST_URLS)
-            printf '%s\n%s' \
+            printf '%s\n%s\n%s' \
                 'https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts' \
-                'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/doh-vpn-proxy-bypass.txt' ;;
-        BLOCKER_CATEGORIES)      printf 'moteurs-sans-filtre frontends-alternatifs' ;;
+                'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/doh-vpn-proxy-bypass.txt' \
+                'https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/anti.piracy.txt' ;;
+        BLOCKER_CATEGORIES)      printf 'moteurs-sans-filtre frontends-alternatifs reseaux-sociaux chat-video streaming' ;;
         BLOCKER_DOH_IP_URLS)
             printf '%s\n%s' \
                 'https://raw.githubusercontent.com/dibdot/DoH-IP-blocklists/master/doh-ipv4.txt' \

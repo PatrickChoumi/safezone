@@ -117,6 +117,23 @@ for v in ${BLOCKER_CONF_VARIABLES}; do
     fi
 done
 
+titre "7 bis. Chaque categorie livree est installee et active d'office"
+for f in "${DEPOT}"/share/categories/*.liste; do
+    nom="$(basename "${f}" .liste)"
+    manque=""
+    grep -qF "share/categories/${nom}.liste" "${MAKEFILE}" || manque="${manque} Makefile"
+    case " $(blocker_conf_defaut BLOCKER_CATEGORIES) " in *" ${nom} "*) ;; *) manque="${manque} defaut" ;; esac
+    grep -qF "${nom}" "${README}" || manque="${manque} README"
+    if [ -z "${manque}" ]; then ok "${nom}"; else ko "${nom} absent de :${manque}"; fi
+done
+for d in reddit.com x.com telegram.org t.me moviebox.ng; do
+    if grep -qxF "${d}" "${DEPOT}"/share/categories/*.liste; then ok "bloque d office : ${d}"
+    else ko "${d} n est dans aucune categorie"; fi
+done
+grep -q '^ip 149\.154\.160\.0/20$' "${DEPOT}/share/categories/reseaux-sociaux.liste" \
+    && ok "adresses de Telegram bloquees au niveau reseau" \
+    || ko "adresses de Telegram absentes"
+
 titre "8. Aucune exemption large du resolveur dans les tables de filtrage"
 # L'utilisateur blocker-adulte n'a besoin que du port 53 vers ses amonts. Un
 # « meta skuid ... accept » dans une table de filtrage exempterait tout

@@ -149,6 +149,12 @@ install:
 		$(DESTDIR)$(sharedir)/categories/moteurs-sans-filtre.liste
 	$(INSTALL_DATA) share/categories/frontends-alternatifs.liste \
 		$(DESTDIR)$(sharedir)/categories/frontends-alternatifs.liste
+	$(INSTALL_DATA) share/categories/reseaux-sociaux.liste \
+		$(DESTDIR)$(sharedir)/categories/reseaux-sociaux.liste
+	$(INSTALL_DATA) share/categories/chat-video.liste \
+		$(DESTDIR)$(sharedir)/categories/chat-video.liste
+	$(INSTALL_DATA) share/categories/streaming.liste \
+		$(DESTDIR)$(sharedir)/categories/streaming.liste
 
 	# --- Tests --------------------------------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/tests

@@ -55,6 +55,12 @@ else
     blocker_warn "  $(m "raison" "reason") : BLOCKER_LOCK_HOSTS=${BLOCKER_LOCK_HOSTS:-auto} $(m "et/ou Docker/podman/LXC/cloud-init detecte" "and/or Docker/podman/LXC/cloud-init detected")"
     blocker_warn "  $(m "les modifications restent tracees par auditd" "changes are still traced by auditd") (ausearch -k blocker-adulte)"
 fi
+# Le contenu de /etc/hosts n'est jamais reecrit ; une ligne qui y fait resoudre
+# un domaine bloque est signalee a chaque passe, et dans le rapport.
+hosts_bloques="$(blocker_hosts_contournements | tr '\n' ' ')"
+if [ -n "${hosts_bloques}" ]; then
+    blocker_warn "/etc/hosts : $(m "fait resoudre des domaines bloques, a retirer" "resolves blocked domains, to remove") : ${hosts_bloques}"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Immuabilite des fichiers proteges
@@ -206,7 +212,7 @@ if [ -d "${BLOCKER_RESERVEDIR}" ]; then
             blocker_lock_file "${actuel}"
             blocker_lock_file "${reserve}" silencieux
         fi
-    done < <(find "${BLOCKER_RESERVEDIR}" -type f 2>/dev/null)
+    done < <(find "${BLOCKER_RESERVEDIR}" -path "${BLOCKER_RESERVEDIR}/code" -prune -o -type f -print 2>/dev/null)
 
     # Fichiers inconnus dans le repertoire des listes : tout fichier « .conf »
     # y est lu par le resolveur, une ligne « server= » suffirait a y detourner
@@ -246,6 +252,15 @@ if [ -d "${BLOCKER_RESERVEDIR}" ]; then
         /usr/lib/blocker-adulte/blocker-apply-nftables >/dev/null 2>&1 || true
         blocker_recharger_resolveur
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2 bis bis. Code installe
+# ---------------------------------------------------------------------------
+# Compare a la copie faite a l'installation : un script de surveillance modifie
+# a la main est restaure.
+if ! blocker_code_verifier; then
+    ecarts=$((ecarts + 1))
 fi
 
 # ---------------------------------------------------------------------------

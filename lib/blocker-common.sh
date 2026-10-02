@@ -575,6 +575,185 @@ blocker_regles_audit() {
     done < "${modele}"
 }
 
+# ---------------------------------------------------------------------------
+# Nouveaux blocages par defaut
+# ---------------------------------------------------------------------------
+# blocker.conf n'est jamais ecrase par une mise a jour : une installation
+# existante ne recevrait donc jamais une categorie ou une liste ajoutee aux
+# valeurs par defaut. A chaque configuration, ce qui est nouveau dans les
+# valeurs par defaut est ajoute UNE fois a la configuration en vigueur — c'est
+# un renforcement, il s'applique sans delai. Ce qui a ete vu une fois n'est
+# plus jamais reajoute : un retrait passe par le delai, et il est respecte.
+
+# Reecrit l'affectation d'une variable, guillemets multi-lignes compris.
+blocker_conf_ecrire_variable() {
+    local fichier="$1" nom="$2" valeur="$3" tmp
+    tmp="$(mktemp)" || return 1
+    awk -v n="${nom}" '
+        saute { if (index($0, q) > 0) saute = 0; next }
+        index($0, n "=") == 1 {
+            reste = substr($0, length(n) + 2); c = substr(reste, 1, 1)
+            if (c == "\"" || c == "\047") { q = c; if (index(substr(reste, 2), q) == 0) saute = 1 }
+            next
+        }
+        { print }
+    ' "${fichier}" > "${tmp}"
+    printf '%s="%s"\n' "${nom}" "${valeur}" >> "${tmp}"
+    cat "${tmp}"
+    rm -f "${tmp}"
+}
+
+blocker_ajouter_nouveautes() {
+    local vus="${BLOCKER_STATEDIR}/conf/defauts-vus" var item actuel nouveau ajouts=0
+    local vigueur="${BLOCKER_CONF_EN_VIGUEUR}" tmp tmp_etc
+    [ -r "${vigueur}" ] || return 0
+    if [ ! -e "${vus}" ]; then
+        # Ce qui existait avant ce mecanisme : deja propose une fois.
+        {
+            printf 'BLOCKER_CATEGORIES moteurs-sans-filtre\n'
+            printf 'BLOCKER_CATEGORIES frontends-alternatifs\n'
+            printf 'BLOCKER_LIST_URLS https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn-only/hosts\n'
+            printf 'BLOCKER_LIST_URLS https://raw.githubusercontent.com/hagezi/dns-blocklists/main/dnsmasq/doh-vpn-proxy-bypass.txt\n'
+        } > "${vus}"
+    fi
+    tmp="$(mktemp)" || return 1
+    cp "${vigueur}" "${tmp}"
+    for var in BLOCKER_CATEGORIES BLOCKER_LIST_URLS BLOCKER_DOH_IP_URLS; do
+        for item in $(blocker_mots "$(blocker_conf_defaut "${var}")"); do
+            grep -qxF "${var} ${item}" "${vus}" && continue
+            printf '%s %s\n' "${var}" "${item}" >> "${vus}"
+            actuel="$(blocker_conf_valeur "${tmp}" "${var}")"
+            case " ${actuel} " in *" ${item} "*) continue ;; esac
+            if [ "${var}" = "BLOCKER_CATEGORIES" ]; then
+                nouveau="$(printf '%s %s' "${actuel}" "${item}" | sed 's/^ //')"
+            else
+                nouveau="$(blocker_mots "${actuel} ${item}")"
+            fi
+            blocker_conf_ecrire_variable "${tmp}" "${var}" "${nouveau}" > "${tmp}.n" && mv "${tmp}.n" "${tmp}"
+            blocker_info "$(m "nouveau blocage par defaut, ajoute" "new default block, added") : ${var} ${item}"
+            ajouts=$((ajouts + 1))
+        done
+    done
+    if [ "${ajouts}" -gt 0 ] && blocker_conf_valide "${tmp}"; then
+        # La proposition de /etc suit : si elle etait identique a la
+        # configuration en vigueur, elle le reste ; sinon, la demande en cours
+        # recoit les memes ajouts.
+        if cmp -s "${BLOCKER_CONF}" "${vigueur}" 2>/dev/null || [ ! -e "${BLOCKER_CONF}" ]; then
+            install -m 0644 "${tmp}" "${BLOCKER_CONF}"
+        else
+            tmp_etc="$(mktemp)"
+            cp "${BLOCKER_CONF}" "${tmp_etc}"
+            for var in BLOCKER_CATEGORIES BLOCKER_LIST_URLS BLOCKER_DOH_IP_URLS; do
+                blocker_conf_ecrire_variable "${tmp_etc}" "${var}" \
+                    "$( { blocker_mots "$(blocker_conf_valeur "${tmp_etc}" "${var}")"; blocker_mots "$(blocker_conf_valeur "${tmp}" "${var}")"; } \
+                        | awk '!vu[$0]++' | if [ "${var}" = "BLOCKER_CATEGORIES" ]; then tr '\n' ' ' | sed 's/ $//'; else cat; fi)" \
+                    > "${tmp_etc}.n" && mv "${tmp_etc}.n" "${tmp_etc}"
+            done
+            blocker_conf_valide "${tmp_etc}" && install -m 0644 "${tmp_etc}" "${BLOCKER_CONF}"
+            rm -f "${tmp_etc}"
+        fi
+        blocker_publier "${tmp}" "${vigueur}"
+        blocker_historique "ajout par defaut : ${ajouts} blocage(s)" "configure"
+    fi
+    rm -f "${tmp}"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Integrite du code installe
+# ---------------------------------------------------------------------------
+# Modifier une ligne d'un script de surveillance etait le moyen le plus court de
+# neutraliser l'outil : rien ne verifiait le code lui-meme. A chaque
+# configuration (installation, mise a jour), le code installe est recopie dans
+# la reserve ; le self-heal et la garde le comparent ensuite et restaurent ce
+# qui a change.
+#
+# Une mise a jour legitime remplace le code AVANT de relancer la
+# configuration : pendant cet intervalle, le fichier ci-dessous suspend le
+# controle. Il est ignore au-dela de 30 minutes.
+BLOCKER_MAJ_FLAG="${BLOCKER_RUNDIR}/mise-a-jour-en-cours"
+
+blocker_code_fichiers() {
+    local u
+    find "${BLOCKER_LIBDIR}" "${BLOCKER_SHAREDIR}" -type f 2>/dev/null
+    for u in /usr/sbin/blocker-uninstall /usr/sbin/blocker-status /usr/sbin/blocker-update \
+             /usr/sbin/blocker-block /usr/sbin/blocker-delai; do
+        [ -f "${u}" ] && printf '%s\n' "${u}"
+    done
+    find "$(blocker_unitdir)" -maxdepth 1 -type f -name 'blocker-*' 2>/dev/null
+}
+
+blocker_mise_a_jour_en_cours() {
+    [ -e "${BLOCKER_MAJ_FLAG}" ] || return 1
+    [ -n "$(find "${BLOCKER_MAJ_FLAG}" -mmin -30 2>/dev/null)" ]
+}
+
+blocker_code_empreinte() {
+    blocker_code_fichiers | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -c1-16
+}
+
+blocker_code_enregistrer() {
+    local res="${BLOCKER_RESERVEDIR}/code" avant apres f
+    avant="$(cat "${BLOCKER_STATEDIR}/conf/code-empreinte" 2>/dev/null)"
+    command -v chattr >/dev/null 2>&1 && chattr -R -i "${res}" 2>/dev/null
+    rm -rf "${res}"
+    install -d -m 0755 "${res}"
+    while IFS= read -r f; do
+        cp -a --parents "${f}" "${res}/" 2>/dev/null
+    done < <(blocker_code_fichiers)
+    command -v chattr >/dev/null 2>&1 && chattr -R +i "${res}" 2>/dev/null
+    apres="$(blocker_code_empreinte)"
+    install -d -m 0755 "${BLOCKER_STATEDIR}/conf"
+    printf '%s\n' "${apres}" > "${BLOCKER_STATEDIR}/conf/code-empreinte"
+    if [ "${avant}" != "${apres}" ]; then
+        blocker_historique "code installe : empreinte ${avant:-aucune} -> ${apres}" "configure"
+    fi
+    rm -f "${BLOCKER_MAJ_FLAG}"
+}
+
+# Compare le code installe a la reserve et restaure ce qui differe. Affiche une
+# ligne par fichier restaure ; code 0 si rien n'a change.
+blocker_code_verifier() {
+    local res="${BLOCKER_RESERVEDIR}/code" ref f n=0
+    [ -d "${res}" ] || return 0
+    blocker_mise_a_jour_en_cours && return 0
+    while IFS= read -r ref; do
+        f="${ref#"${res}"}"
+        if [ ! -e "${f}" ] || ! cmp -s "${ref}" "${f}"; then
+            install -D -m "$(stat -c %a "${ref}")" "${ref}" "${f}" 2>/dev/null || continue
+            blocker_repair "$(m "code installe modifie ou supprime, restaure" "installed code modified or deleted, restored") : ${f}"
+            n=$((n + 1))
+        fi
+    done < <(find "${res}" -type f 2>/dev/null)
+    [ "${n}" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# /etc/hosts
+# ---------------------------------------------------------------------------
+# L'outil ne reecrit jamais /etc/hosts. Mais une ligne qui y fait pointer un
+# domaine bloque vers une adresse passe avant le resolveur : on la signale.
+# Affiche les noms concernes.
+blocker_hosts_contournements() {
+    [ -r /etc/hosts ] || return 0
+    awk '
+        FNR == NR {
+            sub(/#.*/, "")
+            if ($1 == "" || $1 ~ /^(127\.|::1$|0\.0\.0\.0$|fe00::|ff0[0-9]::)/) next
+            for (i = 2; i <= NF; i++) {
+                nom = tolower($i); s = nom
+                while (index(s, ".") > 0) { suffixe[s] = suffixe[s] " " nom; s = substr(s, index(s, ".") + 1) }
+            }
+            next
+        }
+        /^address=\// {
+            d = $0; sub(/^address=\//, "", d); sub(/\/.*$/, "", d)
+            if (d in suffixe) { n = split(suffixe[d], noms, " "); for (j = 1; j <= n; j++) trouve[noms[j]] = 1 }
+        }
+        END { for (t in trouve) print t }
+    ' /etc/hosts "${BLOCKER_LISTDIR}"/*.conf 2>/dev/null | sort -u
+}
+
 # Rechargement complet du resolveur. Un SIGHUP ne relit pas les « address= »
 # d'un conf-dir : il faut un vrai redemarrage.
 blocker_recharger_resolveur() {

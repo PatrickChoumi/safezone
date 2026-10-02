@@ -27,6 +27,14 @@ retrait_autorise() {
 case "$1" in
     remove|deconfigure|upgrade|failed-upgrade)
 
+        # Mise a jour du paquet : le code va etre remplace avant que le
+        # postinst ne le reenregistre. Le controle d'integrite est suspendu
+        # entre les deux (30 minutes au plus).
+        if [ "$1" = "upgrade" ]; then
+            mkdir -p "${RUNDIR}"
+            date -Is > "${RUNDIR}/mise-a-jour-en-cours"
+        fi
+
         if [ "$1" = "remove" ] && ! retrait_autorise; then
             echo "blocker-adulte : retrait refuse — aucune demande de desinstallation arrivee a echeance." >&2
             echo "blocker-adulte : removal refused — no uninstall request past its delay." >&2

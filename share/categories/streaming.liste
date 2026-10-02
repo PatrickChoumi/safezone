@@ -1,0 +1,65 @@
+# blocker-adulte — categorie « streaming »
+#
+# Applications et sites de films en streaming hors des plateformes officielles,
+# a commencer par MovieBox. Leurs catalogues melangent films ordinaires et
+# contenu adulte, sans aucun controle.
+#
+# Les grands sites de streaming pirate (fmovies, 123movies, soap2day,
+# french-stream, coflix, wiflix...) changent de domaine sans cesse : ils sont
+# couverts par la liste communautaire Hagezi « anti.piracy », telechargee
+# chaque jour (BLOCKER_LIST_URLS). Cette categorie ajoute ce que cette liste ne
+# couvre pas.
+
+# --- MovieBox -------------------------------------------------------------
+moviebox.ng
+moviebox.ph
+moviebox.pk
+moviebox.id
+moviebox.pro
+moviebox.tv
+movieboxpro.app
+movieboxapp.net
+aoneroom.com
+inmoviebox.com
+
+# --- Applications et sites du meme genre ------------------------------------
+cinemahd.app
+hdo.app
+teatv.net
+bee-tv.app
+cyberflix.tv
+typhoontv.app
+onionplay.se
+filmplus.app
+showbox.media
+stremio.com
+strem.io
+
+# --- Sites de streaming pirates les plus connus -------------------------------
+# Deja largement couverts par la liste « anti.piracy » ; ces noms-ci y manquaient
+# au moment de l'ecriture, ou sont trop connus pour dependre d'une seule liste.
+fmovies.to
+fmovies24.to
+fmoviesz.to
+fmovies.ps
+123movies.to
+123moviesfree.net
+soap2day.to
+soap2day.rs
+sflix.to
+hdtoday.tv
+hdtoday.cc
+myflixerz.to
+lookmovie2.to
+putlocker.vip
+gomovies.sx
+solarmovie.pe
+yesmovies.ag
+flixtor.to
+dopebox.to
+theflixertv.to
+primewire.tf
+cineb.rs
+movie4k.to
+zoechip.com
+goku.sx
