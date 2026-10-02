@@ -1,0 +1,40 @@
+# blocker-adulte — categorie « moteurs-sans-filtre »
+#
+# Moteurs de recherche dont on ne peut PAS forcer le mode strict par le DNS :
+# leur filtrage passe par un cookie, un parametre d'URL ou un compte, hors de
+# portee d'un resolveur. Google, Bing, DuckDuckGo, YouTube et Yandex ne sont
+# pas ici : leur mode strict est force par blocker-safesearch.
+#
+# Un domaine par ligne ; « address=/domaine/# » couvre aussi ses sous-domaines.
+# Desactiver cette categorie (BLOCKER_CATEGORIES dans blocker.conf) affaiblit
+# la protection : la modification attend le delai.
+
+# Brave Search
+search.brave.com
+
+# Yahoo (resultats Bing, filtrage par cookie) — couvre fr.search.yahoo.com,
+# images.search.yahoo.com, etc.
+search.yahoo.com
+search.yahoo.co.jp
+
+# Startpage
+startpage.com
+startpage.nl
+
+# Ecosia
+ecosia.org
+
+# Qwant (Qwant Junior, filtre par conception, n'est pas bloque)
+qwant.com
+
+# Autres moteurs sans mode strict imposable
+mojeek.com
+metager.org
+metager.de
+yep.com
+presearch.com
+kagi.com
+search.aol.com
+ask.com
+dogpile.com
+gibiru.com

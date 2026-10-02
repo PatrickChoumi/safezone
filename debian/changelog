@@ -1,3 +1,29 @@
+blocker-adulte (1.1.0) unstable; urgency=medium
+
+  * Delai sur tout ce qui affaiblit la protection (blocker-delai) : retrait
+    d'un domaine, exception, modification affaiblissante de blocker.conf,
+    desinstallation. Applicable apres 48 h, a confirmer dans les sept jours.
+  * Rapport hebdomadaire a une personne de confiance (blocker-rapport), et
+    message immediat a chaque demande deposee.
+  * Listes : version precedente gardee en cas d'echec, liste nettement plus
+    petite refusee, seuls des noms de domaine valides acceptes. Corrige la
+    suppression quotidienne de la liste personnelle 50-perso.conf.
+  * SafeSearch : entree precedente gardee pour un moteur qui ne repond pas,
+    tous les domaines de Google, domaines nationaux de Yandex.
+  * Adresses DoH : liste communautaire quotidienne, enregistrees dans un
+    fichier recharge avec les regles.
+  * nftables : comparaison complete a une reference chargee dans un espace
+    reseau jetable, signalement des regles NAT etrangeres sur le port 53,
+    exemption du resolveur limitee a ses amonts sur le port 53.
+  * Self-heal : empreinte et reserve des fichiers d'etat, quarantaine des
+    fichiers inconnus, surveillance des timers.
+  * Navigateurs : Edge, Vivaldi, derives de Firefox, Chromium en snap ; proxy
+    verrouille sur « aucun proxy », session invite desactivee.
+  * Categories : moteurs sans mode strict, interfaces alternatives de YouTube
+    et de Reddit.
+
+ -- blocker-adulte <root@localhost>  Fri, 02 Oct 2026 10:00:00 +0000
+
 blocker-adulte (1.0.0) unstable; urgency=medium
 
   * Version initiale : blocage de contenu adulte persistant et distribue.
@@ -17,7 +43,6 @@ blocker-adulte (1.0.0) unstable; urgency=medium
     - Composant 7 : blocker-selfheal.timer, passe complete toutes les
       5 minutes, chaque ecart journalise.
     - Composant 8 : regles auditd sur tous les fichiers proteges.
-  * Desinstallation complete documentee en huit etapes et automatisee par
-    « blocker-uninstall --confirm ».
+  * Desinstallation complete documentee en huit etapes.
 
  -- blocker-adulte <root@localhost>  Sat, 15 Aug 2026 10:00:00 +0000

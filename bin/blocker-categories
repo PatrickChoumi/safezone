@@ -1,0 +1,78 @@
+#!/bin/bash
+# blocker-adulte — categories de blocage livrees avec l'outil (composant 1)
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-categories
+# Lance par     : blocker-configure, blocker-list-update, blocker-selfheal
+#
+# Une categorie est une liste de domaines livree dans
+# /usr/share/blocker-adulte/categories/<nom>.liste. Les categories actives sont
+# celles de BLOCKER_CATEGORIES dans blocker.conf ; chacune devient
+# /var/lib/blocker-adulte/blocklists/30-categorie-<nom>.conf.
+#
+# Deux categories existent :
+#   moteurs-sans-filtre    moteurs de recherche dont le mode strict ne peut
+#                          pas etre force par le DNS (Brave Search, Yahoo,
+#                          Startpage, Ecosia, Qwant...)
+#   frontends-alternatifs  interfaces alternatives de YouTube et de Reddit
+#
+# Elles ne contiennent aucun domaine adulte : ce sont des chemins de
+# contournement du SafeSearch, pas du contenu.
+#
+# Retirer une categorie affaiblit la protection : la modification de
+# blocker.conf attend le delai avant de s'appliquer.
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+
+SOURCES="${BLOCKER_SHAREDIR}/categories"
+WORK="$(mktemp -d)"
+trap 'rm -rf "${WORK}"' EXIT
+
+declare -A actives=()
+change=0
+
+for nom in ${BLOCKER_CATEGORIES:-}; do
+    case "${nom}" in
+        *[!a-z0-9-]*) blocker_warn "$(m "nom de categorie invalide, ignore" "invalid category name, skipped") : ${nom}"; continue ;;
+    esac
+    src="${SOURCES}/${nom}.liste"
+    if [ ! -r "${src}" ]; then
+        blocker_warn "$(m "categorie inconnue, ignoree" "unknown category, skipped") : ${nom}"
+        continue
+    fi
+    actives["${nom}"]=1
+    cible="${BLOCKER_LISTDIR}/30-categorie-${nom}.conf"
+    {
+        printf '# blocker-adulte — categorie %s (generee, ne pas modifier)\n' "${nom}"
+        printf '# Source : %s\n' "${src}"
+    } > "${WORK}/entete"
+    blocker_convertir_liste "${src}" "${WORK}/corps" "${BLOCKER_EXCEPTIONS}"
+    blocker_conversion_rejets "${WORK}/corps" >/dev/null
+    cat "${WORK}/entete" "${WORK}/corps" > "${WORK}/${nom}.conf"
+
+    if [ -e "${cible}" ] && cmp -s "${WORK}/${nom}.conf" "${cible}" && \
+       [ -e "${BLOCKER_RESERVEDIR}/blocklists/30-categorie-${nom}.conf" ]; then
+        continue
+    fi
+    blocker_publier "${WORK}/${nom}.conf" "${cible}" || continue
+    blocker_info "$(m "categorie active" "category active") : ${nom} ($(grep -c '^address=' "${cible}") $(m "domaines" "domains"))"
+    change=1
+done
+
+for f in "${BLOCKER_LISTDIR}"/30-categorie-*.conf; do
+    [ -e "${f}" ] || continue
+    nom="$(basename "${f}" .conf)"; nom="${nom#30-categorie-}"
+    if [ -z "${actives[${nom}]:-}" ]; then
+        blocker_retirer_gere "${f}"
+        blocker_notice "$(m "categorie retiree (absente de BLOCKER_CATEGORIES)" "category removed (not in BLOCKER_CATEGORIES)") : ${nom}"
+        change=1
+    fi
+done
+
+# Code 3 : quelque chose a change, le resolveur doit etre redemarre. L'appelant
+# decide quand, pour ne pas le redemarrer plusieurs fois de suite.
+[ "${change}" -eq 1 ] && exit 3
+exit 0

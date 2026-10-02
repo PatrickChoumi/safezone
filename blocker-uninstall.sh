@@ -5,28 +5,29 @@
 #
 # IL N'Y A PAS DE COMMANDE UNIQUE QUI TOUT RETIRE. C'est deliberé.
 #
-# Le retrait se fait en quatre phases, chacune demandant deux commandes : une
-# pour voir ce qu'elle va faire et obtenir un jeton, une pour l'executer avec ce
-# jeton. Soit huit commandes au total, et il faut lire l'ecran a chaque fois
-# puisque le jeton est tire au hasard a chaque affichage.
+# Le retrait commence par une DEMANDE (« --demander »), qui n'ouvre la phase 1
+# qu'apres le delai fixe dans blocker.conf (48 h par defaut, 24 h au minimum),
+# puis pendant sept jours. Viennent ensuite quatre phases, chacune demandant
+# deux commandes : une pour voir ce qu'elle va faire et obtenir un jeton, une
+# pour l'executer avec ce jeton.
+#
+# POURQUOI UN DELAI
+#
+# La complexite seule ne retient pas l'auteur de l'outil, qui sait ou sont les
+# choses. Un delai, si : une envie dure vingt minutes, pas deux jours. Qui veut
+# vraiment retirer l'outil le peut toujours — deux jours plus tard.
 #
 # CE QUE CE DECOUPAGE N'EST PAS
 #
-#   - Ce n'est pas une minuterie. Aucune phase ne fait attendre. Qui veut aller
-#     au bout y va tout de suite, il faut simplement le vouloir huit fois.
 #   - Ce n'est pas un piege. Chaque phase fonctionne, dans l'ordre, jusqu'au
-#     retrait complet. La procedure manuelle equivalente est dans le README et
-#     donne exactement le meme resultat sans jamais passer par ce script.
+#     retrait complet. La procedure manuelle equivalente (« --manuel ») donne
+#     le meme resultat sans passer par ce script.
 #   - Il n'y a aucun etat cache. L'avancement est deduit de l'etat reel du
-#     systeme, pas d'un fichier compteur : rebooter, sauter une phase ou en
-#     refaire une deja faite ne peut pas coincer la desinstallation.
-#
-# Le but est d'empecher le « sudo blocker-uninstall --confirm » tape sur un coup
-# de tete a 2 h du matin. Pas d'empecher quelqu'un de decider, a froid, qu'il ne
-# veut plus de cet outil.
+#     systeme ; la demande est un fichier lisible, son echeance est affichee.
 #
 # Usage :
 #   blocker-uninstall --etat              ou est-on, que reste-t-il
+#   blocker-uninstall --demander          deposer la demande de desinstallation
 #   blocker-uninstall --phase N           ce que la phase fera + son jeton
 #   blocker-uninstall --phase N --jeton X executer la phase N
 #   blocker-uninstall --manuel            afficher la procedure manuelle
@@ -63,18 +64,38 @@ RUNDIR="/run/blocker-adulte"
 OPTOUT_FLAG="${RUNDIR}/uninstall-in-progress"
 JETONDIR="${RUNDIR}/jetons"
 
+# Policies navigateur poses par le projet (une par repertoire de navigateur).
+POLICIES="
+/etc/firefox/policies/policies.json
+/etc/firefox-esr/policies/policies.json
+/etc/librewolf/policies/policies.json
+/etc/waterfox/policies/policies.json
+/etc/floorp/policies/policies.json
+/etc/opt/chrome/policies/managed/blocker-adulte.json
+/etc/chromium/policies/managed/blocker-adulte.json
+/etc/chromium-browser/policies/managed/blocker-adulte.json
+/etc/opt/chromium/policies/managed/blocker-adulte.json
+/etc/brave/policies/managed/blocker-adulte.json
+/etc/opt/edge/policies/managed/blocker-adulte.json
+/etc/vivaldi/policies/managed/blocker-adulte.json
+"
+
 # Fichiers que le projet a poses et qui doivent disparaitre.
 A_SUPPRIMER="
 /etc/nftables/blocker-adulte.nft
+/etc/nftables/blocker-adulte-tunnels.nft
 /etc/dnsmasq.d/blocker-adulte.conf
 /etc/systemd/resolved.conf.d/blocker-adulte.conf
 /etc/NetworkManager/dispatcher.d/90-blocker-adulte
-/etc/firefox/policies/policies.json
-/etc/opt/chrome/policies/managed/blocker-adulte.json
-/etc/chromium/policies/managed/blocker-adulte.json
-/etc/opt/chromium/policies/managed/blocker-adulte.json
-/etc/brave/policies/managed/blocker-adulte.json
-"
+${POLICIES}"
+
+# Commandes posees dans /usr/sbin. blocker-uninstall lui-meme part en dernier,
+# a la phase 4.
+SBIN="/usr/sbin/blocker-status /usr/sbin/blocker-update /usr/sbin/blocker-block /usr/sbin/blocker-delai"
+
+# Tables nftables du projet.
+TABLES="ip:blocker_adulte_nat ip6:blocker_adulte_nat inet:blocker_adulte
+ip:blocker_adulte_base_nat inet:blocker_adulte_base inet:blocker_adulte_tunnels"
 
 # Fichiers a deverrouiller mais qui DOIVENT rester : ils appartiennent au
 # systeme, l'outil n'a fait que poser un attribut d'immuabilite dessus.
@@ -84,7 +105,126 @@ PROTEGES="${A_SUPPRIMER} ${A_DEVERROUILLER_SEULEMENT}"
 
 UNITES="blocker-guard.service blocker-resolver.service
 blocker-selfheal.timer blocker-list-update.timer
-blocker-policies.path"
+blocker-policies.path blocker-rapport.timer"
+
+# ---------------------------------------------------------------------------
+# Demande de desinstallation et delai
+# ---------------------------------------------------------------------------
+# Meme format et meme calcul que /usr/lib/blocker-adulte/blocker-delai.sh,
+# refaits ici pour la meme raison que le reste : ce script doit fonctionner
+# quand la bibliotheque n'est plus la. tests/test_coherence.sh verifie que les
+# deux restent d'accord (plancher de 24 h, fenetre de 168 h).
+#
+# L'age d'une demande se lit sur le ctime de son fichier, que le noyau tient a
+# jour et qu'aucune commande ordinaire ne peut antidater.
+DEMANDES="/var/lib/blocker-adulte/delai/demandes"
+VALIDITE_HEURES=168
+
+delai_heures() {
+    local h
+    h="$(sed -n "s/^BLOCKER_DELAI_HEURES=[\"']\{0,1\}\([0-9][0-9]*\).*/\1/p" \
+         /var/lib/blocker-adulte/conf/blocker.conf 2>/dev/null | tail -1)"
+    case "${h}" in ''|*[!0-9]*) h=48 ;; esac
+    [ "${h}" -lt 24 ] && h=24
+    printf '%s' "${h}"
+}
+
+ctime() { stat -c %Z "$1" 2>/dev/null || printf '0'; }
+
+# Demande de desinstallation la plus recente, ou rien.
+demande_courante() {
+    local f dernier=""
+    for f in "${DEMANDES}"/*-desinstallation-*; do
+        [ -f "${f}" ] || continue
+        case "${f}" in *.*) continue ;; esac
+        dernier="${f}"
+    done
+    printf '%s' "${dernier}"
+}
+
+echeance() { printf '%s' $(( $(ctime "$1") + $(delai_heures) * 3600 )); }
+
+expiration() {
+    local fin p
+    fin=$(( $(echeance "$1") + VALIDITE_HEURES * 3600 ))
+    if [ -e "$1.phase1" ]; then
+        p=$(( $(ctime "$1.phase1") + VALIDITE_HEURES * 3600 ))
+        [ "${p}" -gt "${fin}" ] && fin="${p}"
+    fi
+    printf '%s' "${fin}"
+}
+
+# absente | attente | mure | expiree
+etat_demande() {
+    local d maintenant
+    d="$(demande_courante)"
+    [ -n "${d}" ] || { printf 'absente'; return; }
+    maintenant="$(date +%s)"
+    if [ "${maintenant}" -lt "$(echeance "${d}")" ]; then printf 'attente'
+    elif [ "${maintenant}" -gt "$(expiration "${d}")" ]; then printf 'expiree'
+    else printf 'mure'
+    fi
+}
+
+date_lisible() { date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '%s' "$1"; }
+
+notifier() {
+    [ -x /usr/lib/blocker-adulte/blocker-rapport ] || return 0
+    ( timeout 120 /usr/lib/blocker-adulte/blocker-rapport --evenement "$*" >/dev/null 2>&1 & ) 2>/dev/null
+    return 0
+}
+
+deposer_demande() {
+    local d id
+    d="$(demande_courante)"
+    case "$(etat_demande)" in
+        attente|mure)
+            printf '  %s\n' "$(m "Une demande est deja en cours :" "A request is already pending:")"
+            printf '    %s\n' "$(basename "${d}")"
+            afficher_demande
+            return 0 ;;
+    esac
+    install -d -m 0755 "${DEMANDES}" || return 1
+    id="$(date '+%Y%m%d-%H%M%S')-desinstallation-$(tr -dc 'a-z0-9' </dev/urandom | head -c 4)"
+    {
+        printf 'type=desinstallation\n'
+        printf 'objet=blocker-adulte\n'
+        printf 'deposee=%s\n' "$(date -Is)"
+        printf 'par=%s\n' "${SUDO_USER:-root}"
+    } > "${DEMANDES}/${id}" || return 1
+    chmod 0644 "${DEMANDES}/${id}"
+    chattr +i "${DEMANDES}/${id}" 2>/dev/null || true
+    if [ -d /var/lib/blocker-adulte/delai ]; then
+        printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M')" "deposee desinstallation blocker-adulte" "${id}" \
+            >> /var/lib/blocker-adulte/delai/historique 2>/dev/null || true
+    fi
+    logger -t blocker-adulte -p daemon.notice -- \
+        "demande de desinstallation deposee (${id}), phase 1 possible le $(date_lisible "$(echeance "${DEMANDES}/${id}")")" 2>/dev/null || true
+    notifier "$(m "demande de desinstallation deposee, phase 1 possible le" "uninstall requested, phase 1 possible on") $(date_lisible "$(echeance "${DEMANDES}/${id}")")"
+    printf '\n  %s\n' "$(m "Demande de desinstallation enregistree." "Uninstall request filed.")"
+    afficher_demande
+}
+
+afficher_demande() {
+    local d etat
+    d="$(demande_courante)"
+    etat="$(etat_demande)"
+    case "${etat}" in
+        absente)
+            note "$(m "Aucune demande de desinstallation. La deposer :" "No uninstall request. File one:")"
+            note "  sudo blocker-uninstall --demander"
+            note "$(m "La phase 1 sera possible" "Phase 1 will be possible") $(delai_heures) h $(m "plus tard." "later.")" ;;
+        attente)
+            note "$(m "Phase 1 possible a partir du" "Phase 1 possible from") $(date_lisible "$(echeance "${d}")")."
+            note "$(m "Annuler la demande :" "Cancel the request:") sudo blocker-delai --annuler $(basename "${d}")" ;;
+        mure)
+            note "$(m "Delai passe : phase 1 possible jusqu'au" "Delay over: phase 1 possible until") $(date_lisible "$(expiration "${d}")")." ;;
+        expiree)
+            note "$(m "La derniere demande a expire sans etre suivie : en deposer une nouvelle." \
+                      "The last request expired unused: file a new one.")"
+            note "  sudo blocker-uninstall --demander" ;;
+    esac
+}
 
 # ---------------------------------------------------------------------------
 # Adaptation a la distribution, en autonomie complete
@@ -286,6 +426,14 @@ fichier_encore_immuable() {
         local d; d="$(lsattr -d "${f}" 2>/dev/null)"; d="${d%% *}"
         case "${d}" in *i*) return 0 ;; esac
     done
+    local d
+    while IFS= read -r d; do
+        if lsattr -R -a "${d}" 2>/dev/null | awk '{print $1}' | grep -q '[ia]'; then
+            return 0
+        fi
+    done <<EOF
+$(zone_etat_hors_demandes)
+EOF
     return 1
 }
 
@@ -293,7 +441,7 @@ paquet_encore_la() {
     [ -d /usr/lib/blocker-adulte ] && return 0
     paquet_gere && return 0
     local f
-    for f in ${A_SUPPRIMER}; do [ -e "${f}" ] && return 0; done
+    for f in ${A_SUPPRIMER} ${SBIN}; do [ -e "${f}" ] && return 0; done
     return 1
 }
 
@@ -367,6 +515,11 @@ poser_drapeau_retrait() {
 afficher_etat() {
     titre "$(m "Etat de la desinstallation" "Uninstall progress")"
 
+    if ! phase_faite 1; then
+        afficher_demande
+        printf '\n'
+    fi
+
     local restantes=0 n
     for n in 1 2 3 4; do
         local libelle
@@ -432,7 +585,9 @@ decrire_phase() {
             note "  1. blocker-guard.service    $(m "(c'est elle qui relance le resolveur)" \
                                                     "(this is the one that restarts the resolver)")"
             note "  2. blocker-resolver.service"
-            note "  3. blocker-selfheal.timer $(m "et" "and") blocker-list-update.timer"
+            note "  3. $(m "les timers et l'unite path" "the timers and the path unit")"
+            note "$(m "La personne de confiance en est prevenue, si un rapport est configure." \
+                      "The trusted person is told, if a report is configured.")"
             printf '\n'
             note "$(m "APRES CETTE PHASE : le filtrage DNS s'arrete. Les regles nftables" \
                       "AFTER THIS PHASE: DNS filtering stops. The nftables rules stay")"
@@ -475,8 +630,8 @@ decrire_phase() {
                           "  the systemd units and the configuration files.")"
             fi
             printf '\n'
-            note "$(m "Puis les quatre fichiers de policies navigateur, que le retrait du" \
-                      "Then the four browser policy files, which removing the package")"
+            note "$(m "Puis les fichiers de policies navigateur, que le retrait du" \
+                      "Then the browser policy files, which removing the package")"
             note "$(m "paquet ne touche pas (leurs repertoires appartiennent aux" \
                       "does not touch (their directories belong to the browsers), and")"
             note "$(m "navigateurs), et les liens d'activation systemd restes pendants." \
@@ -489,8 +644,8 @@ decrire_phase() {
                       "  - remove the initramfs hook, then rebuild the image")"
             note "$(m "    (sans quoi les regles de base seraient rechargees a chaque boot)" \
                       "    (otherwise the base rules would reload at every boot)")"
-            note "$(m "  - suppression des tables nftables chargees en memoire" \
-                      "  - delete the nftables tables loaded in memory")"
+            note "$(m "  - suppression des six tables nftables chargees en memoire" \
+                      "  - delete the six nftables tables loaded in memory")"
             note "$(m "    (les fichiers ne suffisent pas : ce sont des objets du noyau)" \
                       "    (files are not enough: these are kernel objects)")"
             note "$(m "  - retrait de la ligne d'inclusion de" "  - remove the include line from") $(nft_persist_file),"
@@ -508,18 +663,26 @@ decrire_phase() {
 # Execution des phases
 # ---------------------------------------------------------------------------
 executer_phase_1() {
+    local d
+    d="$(demande_courante)"
+    if [ -n "${d}" ] && [ ! -e "${d}.phase1" ]; then
+        date -Is > "${d}.phase1" && chattr +i "${d}.phase1" 2>/dev/null
+    fi
     poser_drapeau_retrait
+    notifier "$(m "desinstallation : phase 1 executee (filtrage arrete)" "uninstall: phase 1 run (filtering stopped)")"
     titre "$(m "Execution de la phase 1" "Running phase 1")"
 
     # « disable » avant « stop » : une unite desactivee est traitee comme un
     # retrait volontaire par le code de garde, qui n'essaiera pas de la relancer.
     for u in blocker-guard.service blocker-resolver.service \
-             blocker-selfheal.timer blocker-list-update.timer; do
+             blocker-selfheal.timer blocker-list-update.timer \
+             blocker-policies.path blocker-rapport.timer; do
         run systemctl disable "${u}"
         run systemctl stop "${u}"
     done
     run systemctl stop blocker-selfheal.service
     run systemctl stop blocker-list-update.service
+    run systemctl stop blocker-rapport.service
 
     # Hors systemd, le resolveur peut tourner en direct.
     if ! systemd_dispo && pidof dnsmasq >/dev/null 2>&1; then
@@ -533,13 +696,29 @@ executer_phase_1() {
 
 executer_phase_2() {
     poser_drapeau_retrait
-    titre "Execution de la phase 2"
+    titre "$(m "Execution de la phase 2" "Running phase 2")"
     for f in ${PROTEGES}; do
         if [ -e "${f}" ]; then
             run chattr -i "${f}"
-        else
-            note "(absent) ${f}"
         fi
+    done
+    # Zone d'etat : listes, reserve, configuration en vigueur. PAS le
+    # repertoire des demandes : changer un attribut change le ctime, qui date
+    # la demande — le delai repartirait de zero et les phases suivantes
+    # seraient refusees. Il est leve a la phase 4.
+    zone_etat_hors_demandes | while IFS= read -r d; do
+        run chattr -R -i -a "${d}"
+    done
+}
+
+# Sous-repertoires de la zone d'etat, sauf celui des demandes.
+zone_etat_hors_demandes() {
+    local d
+    [ -d /var/lib/blocker-adulte ] || return 0
+    for d in /var/lib/blocker-adulte/*; do
+        [ -e "${d}" ] || continue
+        [ "${d}" = "/var/lib/blocker-adulte/delai" ] && continue
+        printf '%s\n' "${d}"
     done
 }
 
@@ -564,10 +743,13 @@ executer_phase_3() {
                       "${d}/blocker-list-update.service" \
                       "${d}/blocker-list-update.timer" \
                       "${d}/blocker-policies.path" \
-                      "${d}/blocker-policies.service"
+                      "${d}/blocker-policies.service" \
+                      "${d}/blocker-rapport.service" \
+                      "${d}/blocker-rapport.timer"
         done <<EOF
 $(unitdirs)
 EOF
+        run rm -f ${SBIN}
         run rm -f /etc/dnsmasq.d/blocker-adulte.conf
         run rm -f /etc/nftables/blocker-adulte.nft
         run rm -f /etc/nftables/blocker-adulte-tunnels.nft
@@ -578,15 +760,10 @@ EOF
     fi
 
     note "$(m "Policies navigateur :" "Browser policies:")"
-    run rm -f /etc/firefox/policies/policies.json
-    run rm -f /etc/opt/chrome/policies/managed/blocker-adulte.json
-    run rm -f /etc/chromium/policies/managed/blocker-adulte.json
-    run rm -f /etc/opt/chromium/policies/managed/blocker-adulte.json
-    run rm -f /etc/brave/policies/managed/blocker-adulte.json
-
-    for d in /etc/firefox/policies /etc/opt/chrome/policies/managed \
-             /etc/chromium/policies/managed /etc/opt/chromium/policies/managed \
-             /etc/brave/policies/managed; do
+    for f in ${POLICIES}; do
+        [ -e "${f}" ] || continue
+        run rm -f "${f}"
+        d="$(dirname "${f}")"
         if [ -d "${d}" ] && [ -z "$(ls -A "${d}" 2>/dev/null)" ]; then
             run rmdir "${d}"
         fi
@@ -629,12 +806,9 @@ EOF
         note "+ ligne d'inclusion retiree (sauvegarde : ${NFTMAIN}.avant-blocker-adulte)"
     fi
     if command -v nft >/dev/null 2>&1; then
-        for t in "ip blocker_adulte_nat" "ip6 blocker_adulte_nat" "inet blocker_adulte" \
-                 "ip blocker_adulte_base_nat" "inet blocker_adulte_base"; do
-            # shellcheck disable=SC2086
-            if nft list table ${t} >/dev/null 2>&1; then
-                # shellcheck disable=SC2086
-                run nft delete table ${t}
+        for t in ${TABLES}; do
+            if nft list table "${t%%:*}" "${t#*:}" >/dev/null 2>&1; then
+                run nft delete table "${t%%:*}" "${t#*:}"
             fi
         done
     fi
@@ -644,6 +818,7 @@ EOF
     command -v augenrules >/dev/null 2>&1 && run augenrules --load
 
     note "$(m "Etat et utilisateur systeme :" "State and system user:")"
+    chattr -R -i -a /var/lib/blocker-adulte 2>/dev/null || true
     run rm -rf /var/lib/blocker-adulte
     supprimer_utilisateur
 
@@ -677,6 +852,12 @@ afficher_manuel() {
         -e "s|@INTRO2@|$(echapper_sed "$(m \
             "Elles sont aussi dans le README, section « Desinstallation »." \
             "They are also in the README, section « Uninstalling ».")")|g" \
+        -e "s|@P0@|$(echapper_sed "$(m \
+            "Phase 0 — la demande, puis le delai" \
+            "Phase 0 — the request, then the delay")")|g" \
+        -e "s|@P0B@|$(echapper_sed "$(m \
+            "# attendre le delai ($(delai_heures) h) : avant, les watchdogs remettent tout en place" \
+            "# wait for the delay ($(delai_heures) h): before that, the watchdogs put everything back")")|g" \
         -e "s|@P1@|$(echapper_sed "$(m \
             "Phase 1 — watchdogs et timers (la garde d abord, elle relance le resolveur)" \
             "Phase 1 — watchdogs and timers (the guard first, it restarts the resolver)")")|g" \
@@ -690,31 +871,35 @@ afficher_manuel() {
   @INTRO@
   @INTRO2@
 
+  @P0@
+    sudo blocker-uninstall --demander
+    @P0B@
+
   @P1@
     sudo mkdir -p /run/blocker-adulte
     echo manuel | sudo tee /run/blocker-adulte/uninstall-in-progress
     sudo systemctl disable --now blocker-guard.service
     sudo systemctl disable --now blocker-resolver.service
     sudo systemctl disable --now blocker-selfheal.timer blocker-list-update.timer
+    sudo systemctl disable --now blocker-policies.path blocker-rapport.timer
 
   @P2@
     sudo chattr -i /etc/hosts /etc/nftables/blocker-adulte.nft \
+        /etc/nftables/blocker-adulte-tunnels.nft \
         /etc/dnsmasq.d/blocker-adulte.conf \
         /etc/systemd/resolved.conf.d/blocker-adulte.conf \
-        /etc/NetworkManager/dispatcher.d/90-blocker-adulte \
-        /etc/firefox/policies/policies.json \
-        /etc/opt/chrome/policies/managed/blocker-adulte.json \
-        /etc/chromium/policies/managed/blocker-adulte.json \
-        /etc/opt/chromium/policies/managed/blocker-adulte.json \
-        /etc/brave/policies/managed/blocker-adulte.json
+        /etc/NetworkManager/dispatcher.d/90-blocker-adulte
+    sudo chattr -i /etc/*/policies/policies.json /etc/*/policies/managed/blocker-adulte.json \
+        /etc/opt/*/policies/managed/blocker-adulte.json
+    sudo chattr -R -i -a /var/lib/blocker-adulte/blocklists /var/lib/blocker-adulte/reserve \
+        /var/lib/blocker-adulte/conf /var/lib/blocker-adulte/nft
 
   @P3@
     sudo @PURGE@        # @P3C@
-    sudo rm -f /etc/firefox/policies/policies.json \
-        /etc/opt/chrome/policies/managed/blocker-adulte.json \
-        /etc/chromium/policies/managed/blocker-adulte.json \
-        /etc/opt/chromium/policies/managed/blocker-adulte.json \
-        /etc/brave/policies/managed/blocker-adulte.json
+    sudo rm -f /etc/*/policies/policies.json /etc/*/policies/managed/blocker-adulte.json \
+        /etc/opt/*/policies/managed/blocker-adulte.json
+    sudo rm -f /usr/sbin/blocker-status /usr/sbin/blocker-update \
+        /usr/sbin/blocker-block /usr/sbin/blocker-delai
     sudo rm -f /etc/systemd/system/*.target.wants/blocker-*
 
   @P4@
@@ -728,9 +913,11 @@ afficher_manuel() {
     sudo nft delete table ip blocker_adulte_nat
     sudo nft delete table ip6 blocker_adulte_nat
     sudo nft delete table inet blocker_adulte
+    sudo nft delete table inet blocker_adulte_tunnels
     sudo nft delete table ip blocker_adulte_base_nat
     sudo nft delete table inet blocker_adulte_base
     sudo rm -f /etc/audit/rules.d/blocker-adulte.rules && sudo augenrules --load
+    sudo chattr -R -i -a /var/lib/blocker-adulte
     sudo rm -rf /var/lib/blocker-adulte /run/blocker-adulte
     sudo @USERDEL@
     sudo systemctl daemon-reload && sudo systemctl restart systemd-resolved
@@ -753,26 +940,30 @@ if [ $# -eq 0 ]; then
         cat <<'EOF'
 blocker-adulte — uninstalling
 
-There is no single command that removes everything: removal happens in four
-phases, each one taking two commands. This is deliberate, and it is neither a
-timer nor a trap — see « --manual » for the equivalent procedure without this
-script.
+There is no single command that removes everything. Removal starts with a
+request, which opens phase 1 only after the delay set in blocker.conf (48 h by
+default). Then come four phases, each one taking two commands. This is
+deliberate, and it is not a trap — see « --manual » for the equivalent
+procedure.
 
   sudo blocker-uninstall --status     where we stand
-  sudo blocker-uninstall --phase 1    start
+  sudo blocker-uninstall --request    file the request
+  sudo blocker-uninstall --phase 1    after the delay
   sudo blocker-uninstall --manual     equivalent manual procedure
 EOF
     else
         cat <<'EOF'
 blocker-adulte — desinstallation
 
-Il n'y a pas de commande unique qui tout retire : le retrait se fait en quatre
-phases, chacune demandant deux commandes. C'est delibere, et ce n'est ni une
-minuterie ni un piege — voir « --manuel » pour la procedure equivalente sans ce
-script.
+Il n'y a pas de commande unique qui tout retire. Le retrait commence par une
+demande, qui n'ouvre la phase 1 qu'apres le delai fixe dans blocker.conf (48 h
+par defaut). Viennent ensuite quatre phases, chacune demandant deux commandes.
+C'est delibere, et ce n'est pas un piege — voir « --manuel » pour la procedure
+equivalente.
 
   sudo blocker-uninstall --etat       ou en est-on
-  sudo blocker-uninstall --phase 1    commencer
+  sudo blocker-uninstall --demander   deposer la demande
+  sudo blocker-uninstall --phase 1    apres le delai
   sudo blocker-uninstall --manuel     procedure manuelle equivalente
 EOF
     fi
@@ -784,6 +975,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --etat|--status) afficher_etat; exit 0 ;;
         --manuel|--manual) afficher_manuel; exit 0 ;;
+        --demander|--request) deposer_demande; exit $? ;;
         --phase) PHASE="${2:-}"; shift ;;
         --jeton|--token) JETON="${2:-}"; shift ;;
         -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -793,20 +985,20 @@ while [ $# -gt 0 ]; do
 « --confirm » no longer exists.
 
 A single command can no longer remove everything: that is the point. Removal
-now happens in four phases.
+starts with a request, then waits for the delay.
 
   sudo blocker-uninstall --status     see where we stand
-  sudo blocker-uninstall --phase 1    start
+  sudo blocker-uninstall --request    file the request
 EOF
             else
                 cat >&2 <<'EOF'
 « --confirm » n'existe plus.
 
-Une seule commande ne peut plus tout retirer : c'est le but. Le retrait se fait
-maintenant en quatre phases.
+Une seule commande ne peut plus tout retirer : c'est le but. Le retrait
+commence par une demande, puis attend le delai.
 
   sudo blocker-uninstall --etat       voir ou on en est
-  sudo blocker-uninstall --phase 1    commencer
+  sudo blocker-uninstall --demander   deposer la demande
 EOF
             fi
             exit 2
@@ -845,6 +1037,21 @@ while [ "${n}" -lt "${PHASE}" ]; do
     fi
     n=$((n + 1))
 done
+
+# --- Phases 1 a 3 : seulement apres le delai ---------------------------------
+# Les trois phases qui retirent la protection exigent une demande arrivee a
+# echeance — la phase 1 seule ne suffirait pas : des services arretes a la main
+# la feraient passer pour faite. La phase 4, elle, rend a la machine un DNS
+# normal : elle n'est jamais bloquee.
+if [ "${PHASE}" != "4" ] && [ "$(etat_demande)" != "mure" ]; then
+    titre "$(m "Phase" "Phase") ${PHASE} — $(m "pas encore" "not yet")"
+    afficher_demande
+    printf '\n'
+    note "$(m "Toute desinstallation passe par une demande, puis un delai de" \
+              "Every uninstall goes through a request, then a delay of") $(delai_heures) h."
+    note "$(m "Une envie dure vingt minutes, pas deux jours." "A craving lasts twenty minutes, not two days.")"
+    exit 1
+fi
 
 # --- Sans jeton : on decrit et on en delivre un -----------------------------
 if [ -z "${JETON}" ]; then
@@ -896,7 +1103,7 @@ afficher_etat
 # Verification finale apres la derniere phase.
 if [ "${PHASE}" = "4" ]; then
     restes=0
-    for f in ${A_SUPPRIMER} /usr/lib/blocker-adulte /usr/share/blocker-adulte \
+    for f in ${A_SUPPRIMER} ${SBIN} /usr/lib/blocker-adulte /usr/share/blocker-adulte \
              /usr/share/doc/blocker-adulte /var/lib/blocker-adulte \
              /etc/blocker-adulte /run/blocker-adulte \
              /etc/initramfs-tools/hooks/blocker-adulte \

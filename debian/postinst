@@ -16,12 +16,14 @@ LIBDIR=/usr/lib/blocker-adulte
 # pourrait pas reecrire ses propres fichiers de configuration.
 # Ce n'est pas une contre-mesure — c'est la condition pour qu'apt fonctionne
 # normalement sur ce paquet.
+#
+# La bibliotheque est ecrite pour bash (substitutions de processus) : ce
+# script, lance par dpkg sous /bin/sh, ne peut pas la sourcer lui-meme — dash
+# s'arreterait sur une erreur de syntaxe.
 deverrouiller() {
     [ -r "${LIBDIR}/blocker-common.sh" ] || return 0
     command -v chattr >/dev/null 2>&1 || return 0
-    # shellcheck disable=SC1091
-    . "${LIBDIR}/blocker-common.sh"
-    blocker_unlock_all 2>/dev/null || true
+    bash -c ". '${LIBDIR}/blocker-common.sh' && blocker_unlock_all" 2>/dev/null || true
 }
 
 case "$1" in

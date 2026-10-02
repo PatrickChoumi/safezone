@@ -4,11 +4,31 @@
 # Installe dans : /usr/lib/blocker-adulte/blocker-list-update
 # Lance par     : blocker-list-update.timer (quotidien)
 #
-# Telecharge les listes categorisees, les convertit au format dnsmasq, valide le
-# resultat AVANT de le mettre en place, puis recharge le resolveur.
+# Telecharge les listes de BLOCKER_LIST_URLS, n'en retient que des noms de
+# domaine valides, ecrit lui-meme les directives de blocage, fait valider le
+# resultat par dnsmasq AVANT de le mettre en place, puis recharge le resolveur.
 #
-# En cas d'echec reseau ou de liste invalide, les listes en place sont
-# conservees : une machine hors ligne garde son blocage.
+# TROIS REGLES, TIREES DES DEFAUTS DE LA VERSION PRECEDENTE
+#
+#   1. Une liste qui echoue garde sa version precedente. L'ancien script
+#      effacait toutes les listes puis n'installait que celles qui avaient
+#      reussi : une seule liste en echec (« --max-time 60 » sur une connexion
+#      lente) disparaissait jusqu'a la reussite suivante.
+#
+#   2. Une liste nettement plus petite que la precedente (moins de la moitie)
+#      est refusee : un telechargement tronque ou une page d'erreur ne doit pas
+#      remplacer une liste complete.
+#
+#   3. Une liste exterieure ne fournit que des noms de domaine. Les lignes
+#      « server= » d'une liste tierce etaient recopiees telles quelles, ce qui
+#      laissait cette liste rediriger la resolution d'un domaine vers le serveur
+#      de son choix. Voir lib/blocker-listes.sh.
+#
+# Chaque liste a un nom de fichier stable, derive de son URL
+# (10-liste-<empreinte>.conf) : c'est ce qui permet de garder sa version
+# precedente. L'ancien nettoyage visait « [1-9][0-9]-*.conf » et emportait au
+# passage la liste personnelle 50-perso.conf, que la documentation disait
+# pourtant jamais ecrasee.
 
 set -uo pipefail
 
@@ -16,116 +36,161 @@ set -uo pipefail
 
 blocker_require_root
 
-DEST="${BLOCKER_STATEDIR}/blocklists"
+DEST="${BLOCKER_LISTDIR}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 install -d -m 0755 "${DEST}"
 
-# Convertit une liste au format « hosts » (0.0.0.0 domaine) OU au format
-# dnsmasq natif (address=/domaine/) vers des directives dnsmasq.
-convertir() {
-    local src="$1" out="$2"
-    awk '
-        # Commentaires et lignes vides
-        /^[[:space:]]*(#|$)/ { next }
-
-        # Format dnsmasq natif : on reprend la ligne telle quelle
-        /^(address|server|local)=\// { print; next }
-
-        # Format hosts : "0.0.0.0 exemple.tld" ou "127.0.0.1 exemple.tld"
-        /^(0\.0\.0\.0|127\.0\.0\.1|::)[[:space:]]+/ {
-            domaine = $2
-            if (domaine == "" ) next
-            if (domaine == "localhost" || domaine == "localhost.localdomain") next
-            if (domaine == "broadcasthost" || domaine == "local") next
-            if (domaine ~ /^0\.0\.0\.0$/) next
-            print "address=/" domaine "/#"
-            next
-        }
-    ' "${src}" | sort -u > "${out}"
-}
-
 telecharger() {
     local url="$1" out="$2"
     curl --fail --silent --show-error --location \
-         --max-time 60 --retry 2 --retry-delay 3 \
+         --connect-timeout 20 --max-time 900 \
+         --speed-limit 1024 --speed-time 120 \
+         --retry 3 --retry-delay 10 \
          --user-agent "blocker-adulte/1.0" \
          --output "${out}" "${url}"
 }
 
+nom_pour_url() {
+    printf '10-liste-%s.conf' "$(printf '%s' "$1" | sha256sum | cut -c1-8)"
+}
+
+entete() {
+    printf '# blocker-adulte — liste telechargee (generee, ne pas modifier)\n'
+    printf '# Source : %s\n' "$1"
+    printf '# Recuperee le %s ; seuls les noms de domaine valides sont retenus.\n' "$(date -Is)"
+}
+
+# ---------------------------------------------------------------------------
+# Telechargement et conversion, liste par liste
+# ---------------------------------------------------------------------------
+declare -A attendus=()
+nouvelles=()
+gardees=0
 total=0
-fichiers_ok=()
-index=10
 
 while IFS= read -r url; do
     [ -n "${url}" ] || continue
-    brut="${WORK}/brut-${index}"
-    converti="${WORK}/$(printf '%02d' "${index}")-liste.conf"
+    case "${url}" in
+        https://*) ;;
+        *) blocker_warn "$(m "URL ignoree (https requis)" "URL skipped (https required)") : ${url}"; continue ;;
+    esac
+    nom="$(nom_pour_url "${url}")"
+    attendus["${nom}"]=1
+    cible="${DEST}/${nom}"
+    ancien=0
+    [ -e "${cible}" ] && ancien="$(grep -c '^address=/' "${cible}" 2>/dev/null || true)"
 
+    brut="${WORK}/brut"
+    converti="${WORK}/converti"
     if ! telecharger "${url}" "${brut}"; then
-        blocker_warn "$(m "telechargement echoue, liste ignoree" "download failed, list skipped") : ${url}"
-        index=$((index + 1))
+        blocker_warn "$(m "telechargement echoue, version precedente conservee" "download failed, previous version kept") (${ancien}) : ${url}"
+        gardees=$((gardees + 1)); total=$((total + ancien))
         continue
     fi
 
-    convertir "${brut}" "${converti}"
+    blocker_convertir_liste "${brut}" "${converti}" "${BLOCKER_EXCEPTIONS}"
+    rejets="$(blocker_conversion_rejets "${converti}")"
     lignes="$(wc -l < "${converti}")"
 
-    # Garde-fou : une liste vide ou minuscule signale une page d'erreur HTML
-    # renvoyee avec un code 200, pas une vraie liste.
+    # Une liste vide ou minuscule signale une page d'erreur HTML renvoyee avec
+    # un code 200, pas une vraie liste.
     if [ "${lignes}" -lt 100 ]; then
-        blocker_warn "$(m "liste suspecte" "suspicious list") (${lignes} $(m "entrees seulement" "entries only")), $(m "ignoree" "skipped") : ${url}"
-        index=$((index + 1))
+        blocker_warn "$(m "liste suspecte" "suspicious list") (${lignes} $(m "entrees" "entries")), $(m "version precedente conservee" "previous version kept") : ${url}"
+        gardees=$((gardees + 1)); total=$((total + ancien))
         continue
     fi
+    if [ "${ancien}" -gt 0 ] && [ "${lignes}" -lt $((ancien / 2)) ]; then
+        blocker_warn "$(m "liste nettement plus petite que la precedente" "list much smaller than the previous one") (${lignes} / ${ancien}), $(m "refusee" "rejected") : ${url}"
+        gardees=$((gardees + 1)); total=$((total + ancien))
+        continue
+    fi
+    if [ "${rejets}" -gt 0 ]; then
+        blocker_info "${rejets} $(m "ligne(s) ecartee(s) (ni domaine valide ni commentaire)" "line(s) discarded (neither a valid domain nor a comment)") : ${url}"
+    fi
 
-    blocker_info "$(m "liste recuperee" "list fetched") : ${lignes} $(m "domaines depuis" "domains from") ${url}"
-    fichiers_ok+=("${converti}")
+    { entete "${url}"; cat "${converti}"; } > "${WORK}/${nom}"
+    nouvelles+=("${nom}")
     total=$((total + lignes))
-    index=$((index + 1))
-done <<< "${BLOCKER_LIST_URLS}"
+    blocker_info "$(m "liste recuperee" "list fetched") : ${lignes} $(m "domaines depuis" "domains from") ${url}"
+done < <(blocker_mots "${BLOCKER_LIST_URLS:-}")
 
-if [ "${#fichiers_ok[@]}" -eq 0 ]; then
-    blocker_warn "$(m "aucune liste telechargee, les listes en place sont conservees" \
-                  "no list downloaded, the lists already in place are kept")"
-    exit 0
+# ---------------------------------------------------------------------------
+# Validation avant mise en place
+# ---------------------------------------------------------------------------
+# On reconstitue l'arborescence telle qu'elle sera apres la mise a jour et on
+# la fait valider par dnsmasq lui-meme. Une liste corrompue ne doit jamais
+# empecher le resolveur de demarrer : sans DNS, la machine parait cassee et la
+# premiere reaction est de tout desinstaller.
+if [ "${#nouvelles[@]}" -gt 0 ]; then
+    CANDIDAT="${WORK}/candidat"
+    install -d -m 0755 "${CANDIDAT}"
+    for f in "${DEST}"/*.conf; do
+        [ -e "${f}" ] && cp "${f}" "${CANDIDAT}/"
+    done
+    for nom in "${nouvelles[@]}"; do
+        cp "${WORK}/${nom}" "${CANDIDAT}/${nom}"
+    done
+    TEST_CONF="${WORK}/test.conf"
+    sed "s#^conf-dir=.*#conf-dir=${CANDIDAT},*.conf#" \
+        /etc/dnsmasq.d/blocker-adulte.conf > "${TEST_CONF}"
+
+    if command -v dnsmasq >/dev/null 2>&1 && \
+       ! dnsmasq --test --conf-file="${TEST_CONF}" >/dev/null 2>&1; then
+        blocker_err "$(m "les listes telechargees produisent une configuration dnsmasq invalide, mise a jour abandonnee" \
+                         "the downloaded lists produce an invalid dnsmasq configuration, update aborted")"
+        dnsmasq --test --conf-file="${TEST_CONF}" >&2 || true
+        exit 1
+    fi
+
+    for nom in "${nouvelles[@]}"; do
+        blocker_publier "${WORK}/${nom}" "${DEST}/${nom}" || \
+            blocker_err "$(m "mise en place impossible" "cannot install") : ${nom}"
+    done
 fi
 
-# --- Validation avant mise en place ----------------------------------------
-# On construit l'arborescence candidate et on la fait valider par dnsmasq
-# lui-meme. Une liste corrompue ne doit jamais empecher le resolveur de
-# demarrer : sans DNS, la machine parait cassee et la premiere reaction de
-# l'utilisateur est de tout desinstaller.
-CANDIDAT="${WORK}/candidat"
-install -d -m 0755 "${CANDIDAT}"
-install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/00-base.conf" "${CANDIDAT}/00-base.conf"
-for f in "${fichiers_ok[@]}"; do
-    install -m 0644 "${f}" "${CANDIDAT}/$(basename "${f}")"
-done
-
-TEST_CONF="${WORK}/test.conf"
-sed "s#^conf-dir=.*#conf-dir=${CANDIDAT},*.conf#" \
-    /etc/dnsmasq.d/blocker-adulte.conf > "${TEST_CONF}"
-
-if ! dnsmasq --test --conf-file="${TEST_CONF}" >/dev/null 2>&1; then
-    blocker_err "$(m "les listes telechargees produisent une configuration dnsmasq invalide, mise a jour abandonnee" \
-                 "the downloaded lists produce an invalid dnsmasq configuration, update aborted")"
-    dnsmasq --test --conf-file="${TEST_CONF}" >&2 || true
-    exit 1
-fi
-
-# --- Mise en place ----------------------------------------------------------
-# On retire les anciennes listes telechargees (10-*.conf et suivantes) mais
-# jamais 00-base.conf, qui est le filet de securite hors ligne.
-find "${DEST}" -maxdepth 1 -name '[1-9][0-9]-*.conf' -delete
-
-for f in "${CANDIDAT}"/[1-9][0-9]-*.conf; do
+# ---------------------------------------------------------------------------
+# Nettoyage : seulement les listes telechargees qui ne correspondent plus
+# ---------------------------------------------------------------------------
+# - une liste dont l'URL a ete retiree de blocker.conf (retrait soumis au
+#   delai : il n'arrive ici qu'une fois approuve) ;
+# - les fichiers a l'ancien nom (10-liste.conf, 11-liste.conf...), une fois
+#   que chaque URL a sa liste au nouveau nom.
+for f in "${DEST}"/10-liste-*.conf; do
     [ -e "${f}" ] || continue
-    install -m 0644 "${f}" "${DEST}/$(basename "${f}")"
+    nom="$(basename "${f}")"
+    if [ -z "${attendus[${nom}]:-}" ]; then
+        blocker_retirer_gere "${f}"
+        blocker_info "$(m "liste retiree (URL absente de la configuration)" "list removed (URL no longer configured)") : ${nom}"
+    fi
 done
 
-blocker_info "$(m "listes de blocage mises a jour" "blocklists updated") : ${total} $(m "domaines au total dans" "domains in total in") ${DEST}"
+complet=1
+for nom in "${!attendus[@]}"; do
+    [ -s "${DEST}/${nom}" ] || complet=0
+done
+if [ "${complet}" -eq 1 ]; then
+    for f in "${DEST}"/[1-4][0-9]-liste.conf; do
+        [ -e "${f}" ] || continue
+        blocker_retirer_gere "${f}"
+        blocker_info "$(m "ancienne liste remplacee" "old list replaced") : $(basename "${f}")"
+    done
+fi
+
+if [ "${#nouvelles[@]}" -eq 0 ]; then
+    blocker_warn "$(m "aucune liste mise a jour, les listes en place sont conservees" \
+                      "no list updated, the lists already in place are kept")"
+else
+    blocker_info "$(m "listes de blocage mises a jour" "blocklists updated") : ${#nouvelles[@]} $(m "nouvelle(s)," "new,") ${gardees} $(m "conservee(s)," "kept,") ${total} $(m "domaines au total" "domains in total")"
+fi
+
+# --- Categories (moteurs sans filtre, interfaces alternatives) ---------------
+/usr/lib/blocker-adulte/blocker-categories >/dev/null 2>&1
+case "$?" in
+    0|3) ;;
+    *) blocker_warn "$(m "generation des categories en echec" "generating the categories failed")" ;;
+esac
 
 # --- SafeSearch force -------------------------------------------------------
 # Les adresses des hotes « stricts » des moteurs changent : on les rafraichit en
@@ -137,17 +202,15 @@ if [ -x /usr/lib/blocker-adulte/blocker-safesearch ]; then
 fi
 
 # --- Adresses des resolveurs DoH -------------------------------------------
-# Les adresses ecrites en dur dans le jeu de regles vieillissent ; on les
-# complete avec ce que les noms resolvent aujourd'hui.
 if [ -x /usr/lib/blocker-adulte/blocker-doh-refresh ]; then
     /usr/lib/blocker-adulte/blocker-doh-refresh || \
-        blocker_warn "$(m "rafraichissement des adresses DoH en echec, la liste ecrite en dur reste active" \
-                  "DoH address refresh failed, the hard-coded list stays active")"
+        blocker_warn "$(m "rafraichissement des adresses DoH en echec, les adresses en place restent actives" \
+                  "DoH address refresh failed, the addresses in place stay active")"
 fi
 
 # --- Rechargement du resolveur ---------------------------------------------
 if blocker_unit_active blocker-resolver.service; then
-    if systemctl reload-or-restart blocker-resolver.service; then
+    if systemctl restart blocker-resolver.service; then
         blocker_info "$(m "resolveur recharge avec les nouvelles listes" "resolver reloaded with the new lists")"
     else
         blocker_err "$(m "rechargement du resolveur en echec" "reloading the resolver failed")"

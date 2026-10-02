@@ -33,10 +33,23 @@ interest-noawait /usr/lib/chromium-browser
 # Brave
 interest-noawait /opt/brave.com/brave
 
+# Microsoft Edge et Vivaldi
+interest-noawait /opt/microsoft/msedge
+interest-noawait /opt/vivaldi
+
+# Derives de Firefox
+interest-noawait /usr/lib/librewolf
+interest-noawait /usr/share/librewolf
+
 # Repertoires de policies eux-memes : si un paquet de navigateur recree ou
 # remplace son arborescence de policies, on redeploie.
 interest-noawait /etc/firefox/policies
 interest-noawait /etc/opt/chrome/policies/managed
 interest-noawait /etc/chromium/policies/managed
 interest-noawait /etc/opt/chromium/policies/managed
+interest-noawait /etc/chromium-browser/policies/managed
 interest-noawait /etc/brave/policies/managed
+interest-noawait /etc/opt/edge/policies/managed
+interest-noawait /etc/vivaldi/policies/managed
+interest-noawait /etc/firefox-esr/policies
+interest-noawait /etc/librewolf/policies

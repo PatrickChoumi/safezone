@@ -7,21 +7,23 @@ across eight independent components**.
 > [`README.md`](README.md) — c'est lui que lit `tests/test_no_hidden_files.sh`
 > pour vérifier le manifeste, et lui qui fait foi en cas de divergence.
 
-The tool is not designed to be impossible to remove. It is designed so that
-removing it requires **knowing what you are doing, where, and in what order** —
-enough to rule out an impulsive disable, without ever turning the machine into a
-black box.
+The tool is not designed to be impossible to remove. It is designed so that a
+moment of craving is not enough to undo it: **whatever weakens the protection
+waits for a delay** (48 hours by default), then must be confirmed. A craving
+lasts twenty minutes, not two days. Nothing is hidden: every request, its due
+date and what it will do are shown by `blocker-delai`.
 
-**No single command removes everything.** Removal happens in
-[four phases](#uninstalling), eight commands in total, with a randomly drawn
-token at each step. This is neither a timer nor a trap: the equivalent manual
-procedure can be printed at any time with `blocker-uninstall --manual`.
+**No single command removes everything.** Removal starts with a request, waits
+for the delay, then happens in [four phases](#uninstalling) with a randomly
+drawn token at each step. It is not a trap: the equivalent manual procedure can
+be printed at any time with `blocker-uninstall --manual`.
 
-Two commands worth remembering:
+Three commands worth remembering:
 
 ```bash
 blocker-status              # is it working, right now?
 blocker-status --probe      # prove it with real DNS queries (--sonde also works)
+blocker-delai               # what is waiting for the delay
 ```
 
 ---
@@ -31,6 +33,7 @@ blocker-status --probe      # prove it with real DNS queries (--sonde also works
 - [Language](#language)
 - [Supported distributions](#supported-distributions)
 - [Philosophy and red lines](#philosophy-and-red-lines)
+- [What holds against someone who knows everything](#what-holds-against-someone-who-knows-everything)
 - [The eight components](#the-eight-components)
 - [Installation](#installation)
 - [Where everything goes](#where-everything-goes)
@@ -164,8 +167,8 @@ These rules are held throughout the code and verified by
 |---|---|
 | Hiding a process, a file or a package entry | No `/proc` manipulation, no `LD_PRELOAD`, no kernel module. `ps aux`, `lsof` and the package manager show everything under real names. |
 | Copying itself to undocumented locations | The manifest in `README.md` lists **every** location. Test 7 actively looks for copies elsewhere. |
-| Fighting a deliberate removal | A voluntary-removal flag puts the watchdogs to sleep at the very first uninstall step. |
-| Touching the bootloader or firmware | The initramfs hook only adds files to the initramfs image. No reference to GRUB, systemd-boot, `efibootmgr` or `/sys/firmware`: checked by `test_recovery_mode_hook.sh`. |
+| Fighting a deliberate removal | A requested uninstall is **deferred, never fought**: once the delay has passed, the watchdogs stand down. |
+| Touching the bootloader or firmware | The initramfs hook only adds files to the initramfs image; its scripts never reference GRUB, systemd-boot, `efibootmgr` or `/sys/firmware` (checked by `test_recovery_mode_hook.sh`). `blocker-status` *reads* the GRUB configuration to report a missing password; nothing writes it. |
 | Repairing silently | Every automatic fix is logged with the `REPARATION:` / `REPAIR:` prefix in `journalctl`. |
 
 ### The voluntary-removal flag
@@ -174,16 +177,91 @@ These rules are held throughout the code and verified by
 /run/blocker-adulte/uninstall-in-progress
 ```
 
-Created **first of all** by `blocker-uninstall`. While it exists,
-`blocker-guard`, `blocker-resolver-run`, `blocker-selfheal` and the
-NetworkManager dispatcher stop repairing anything and say so in the journal.
+Set by phase 1 of `blocker-uninstall`. It is honoured only if **an uninstall
+request has passed its delay** (`blocker-uninstall --request`, then 48 h).
+Then `blocker-guard`, `blocker-resolver-run`, `blocker-selfheal` and the
+NetworkManager dispatcher stop repairing anything and say so in the journal. A
+unit passed to `systemctl disable` counts the same way, under the same
+condition.
 
-A second, independent trigger: a unit passed to `systemctl disable` is also
-treated as a voluntary removal. That is why the uninstall procedure always runs
-`disable` **before** `stop`.
+Without a request past its delay, a flag set by hand is removed, a disabled or
+masked unit is re-enabled and a stopped timer is restarted — each time with a
+`REPAIR:` line and the command that does work. The user announces the removal,
+through the request, and the tool steps aside when it falls due.
 
-The tool therefore never tries to guess whether an `rm` is "legitimate": the
-user announces it, and the tool steps aside.
+---
+
+## What holds against someone who knows everything
+
+The tool used to rely on complexity: you had to know where things were and in
+what order to undo them. But its user is its author, who knows every file.
+Against them complexity holds almost nothing, and it wears out. Three things
+hold better.
+
+### 1. The delay
+
+Every action that weakens the protection becomes a **request**, applicable
+after `BLOCKER_DELAI_HEURES` (48 h by default, 24 h minimum), then **to be
+confirmed within seven days**; unconfirmed, it expires. Whatever strengthens the
+protection applies at once.
+
+| Action | How it goes through the delay |
+|---|---|
+| Editing `/etc/blocker-adulte/blocker.conf` | This file is now a **proposal**. The configuration in force is `/var/lib/blocker-adulte/conf/blocker.conf`, immutable and audited. A strengthening proposal applies at the next self-heal pass; a weakening one becomes a request. When in doubt (a changed DNS upstream, say), a change counts as weakening. |
+| Removing a domain from the personal list | `blocker-block --remove` files a request (it used to ask for a single "y"). |
+| Lifting a block that comes from the lists | `blocker-block --exception`, same thing. |
+| Disabling a service, uninstalling | `blocker-uninstall --request`; phases 1 to 3 and `apt purge` wait for the due date. |
+
+```bash
+sudo blocker-delai                    # pending requests, due dates
+sudo blocker-delai --confirm ID       # after the due date
+sudo blocker-delai --cancel ID        # any time, immediate
+```
+
+The age of a request is read from the **ctime** of its file, which the kernel
+maintains and no ordinary command can backdate. A proposal is **never
+executed**: it is read by a strict parser that only accepts assignments of
+known variables, with no `$`, backtick or backslash.
+
+### 2. Another person
+
+The strongest measure, and one the tool cannot take for you:
+
+1. **Use an account without administrator rights day to day**, and give the
+   administrator password to someone you trust.
+2. **Set a GRUB password and a BIOS/UEFI password.** Ubuntu's recovery mode
+   opens a root shell without a password; without both passwords, the account
+   without rights does not hold.
+
+The tool never touches the boot loader. `blocker-status` **checks**, read-only:
+human accounts in `sudo`/`wheel`/`admin`, a GRUB password (`set superusers`),
+`editor no` for systemd-boot. The BIOS password cannot be checked from the
+system.
+
+### 3. Someone who sees the logs
+
+auditd records everything, but nobody read those logs. `blocker-rapport` sends
+**every week** to a trusted person: the tool's status, repairs, delayed
+requests, changes to protected files and sensitive commands run as root, machine
+boots (a recovery-mode boot is flagged). It goes out **even when nothing
+happened**, and it is numbered: if the reports stop, they notice. Each request
+that weakens the protection is also reported **when it is filed**, i.e. during
+the delay. The report contains no visited address.
+
+```bash
+# /etc/blocker-adulte/blocker.conf
+BLOCKER_RAPPORT_DESTINATAIRE="friend@example.org"
+BLOCKER_RAPPORT_EXPEDITEUR="me@example.org"
+BLOCKER_RAPPORT_SMTP="smtps://smtp.example.org:465"
+```
+
+```bash
+echo 'user:password' | sudo tee /etc/blocker-adulte/rapport-smtp.secret
+sudo chmod 600 /etc/blocker-adulte/rapport-smtp.secret
+sudo blocker-delai                                     # adding a recipient applies at once
+sudo /usr/lib/blocker-adulte/blocker-rapport --test    # test message
+sudo /usr/lib/blocker-adulte/blocker-rapport --apercu  # preview the report
+```
 
 ---
 
@@ -191,14 +269,31 @@ user announces it, and the tool steps aside.
 
 | # | Component | Role | Recovered by |
 |---|---|---|---|
-| 1 | **Local DNS resolver** | `dnsmasq` on `127.0.0.1:53`, StevenBlack *porn-only* + Hagezi *doh-vpn-proxy-bypass* lists, **enforced SafeSearch**, filtering upstream as backstop | 6, 7 |
-| 2 | **Forced network enforcement** | `systemd-resolved` → `127.0.0.1`, nftables DNAT of port 53, DoT/DoQ/DoH rejection, NetworkManager dispatcher | 4, 6, 7 |
-| 3 | **Browser policies** | One independent file per detected browser (Firefox, Chrome, Chromium, Brave) | 5, 6, 7 |
+| 1 | **Local DNS resolver** | `dnsmasq` on `127.0.0.1:53`, StevenBlack *porn-only* + Hagezi *doh-vpn-proxy-bypass* lists, shipped categories, **enforced SafeSearch**, filtering upstream as backstop | 6, 7 |
+| 2 | **Forced network enforcement** | `systemd-resolved` → `127.0.0.1`, nftables DNAT of port 53, DoT/DoQ/DoH rejection (community address list), NetworkManager dispatcher | 4, 6, 7 |
+| 3 | **Browser policies** | One independent file per detected browser (Firefox and forks, Chrome, Chromium, Brave, Edge, Vivaldi); proxy locked to "direct", guest mode off | 5, 6, 7 |
 | 4 | **Initramfs hook** | Base nftables rules loaded before the root filesystem is mounted, active in recovery mode | — (rebuilt at install time) |
 | 5 | **Package-manager reaction** | dpkg triggers, pacman hook, and a systemd `path` unit watching the policy directories | 7 |
-| 6 | **Two cross-monitored services** | `blocker-resolver.service` ↔ `blocker-guard.service`, each restarts the other | each other, and 7 |
-| 7 | **Self-heal timer** | Full pass every 5 min: `chattr +i`, policies, nftables rules, services | systemd |
-| 8 | **auditd logging** | Records every write to the protected files | — (prevents nothing, records) |
+| 6 | **Two cross-monitored services** | `blocker-resolver.service` ↔ `blocker-guard.service`, each restarts the other; the guard also watches the timers | each other, and 7 |
+| 7 | **Self-heal timer** | Full pass every 5 min: delay, `chattr +i`, state-file hashes and quarantine, policies, nftables rules compared with a reference, services | 6, systemd |
+| 8 | **auditd logging** | Records writes to the protected files and sensitive root commands; summarised in the weekly report | — (prevents nothing, records) |
+
+Highlights of the latest hardening, detailed in `README.md`:
+
+- **lists**: a list that fails keeps its previous version, a list less than
+  half its previous size is refused, and an outside list only supplies domain
+  names — the tool writes `address=/domain/#` itself, so a third-party
+  `server=` line can no longer redirect a domain. The personal list
+  `50-perso.conf` is no longer deleted by the daily cleanup;
+- **nftables**: the active ruleset is compared table by table with a reference
+  loaded in a throwaway network namespace (`unshare -n`); foreign NAT rules on
+  port 53 are reported; the resolver's exemption is limited to its upstreams on
+  port 53; DoH addresses come from a community list and are saved to a file
+  reloaded with the rules;
+- **self-heal**: every state file has a reserve copy; a hand edit is restored
+  (added blocks are accepted), an unknown file in `blocklists/` is quarantined;
+- **categories**: search engines whose strict mode cannot be forced by DNS, and
+  alternative YouTube and Reddit front-ends, blocked by default.
 
 ### Enforced SafeSearch — the most effective measure in the tool
 
@@ -215,15 +310,15 @@ independent of being signed in.
 
 | Engine | Redirected to | Domains covered |
 |---|---|---|
-| Google | `forcesafesearch.google.com` | `www.google.com` + 38 country domains |
+| Google | `forcesafesearch.google.com` | every domain of the official list (`google.com/supported_domains`), merged with a built-in copy |
 | YouTube | `restrict.youtube.com` | `www.youtube.com`, `m.youtube.com`, the APIs |
 | Bing | `strict.bing.com` | `www.bing.com`, `bing.com`, `cn.bing.com` |
 | DuckDuckGo | `safe.duckduckgo.com` | `duckduckgo.com` and its search subdomains |
-| Yandex | `familysearch.yandex.ru` | `yandex.com`, `yandex.ru` |
+| Yandex | `familysearch.yandex.ru` | `yandex.ru`, `yandex.com`, 18 country domains, `ya.ru` (exact names only) |
 
 Addresses are **never hard-coded**: `blocker-safesearch` resolves them at every
-daily update. If resolution fails, the file already in place is kept — never a
-silent fallback to "no SafeSearch".
+daily update. An engine whose strict host does not answer **keeps its previous
+entry** instead of dropping out of SafeSearch until the next update.
 
 ### Component 4 across three initramfs generators
 
@@ -294,10 +389,10 @@ Summary of the top-level locations:
 /usr/lib/blocker-adulte/          executables and shared libraries
 /usr/share/blocker-adulte/        templates, lists, tests
 /usr/share/doc/blocker-adulte/    both READMEs
-/usr/sbin/blocker-{status,block,update,uninstall}
+/usr/sbin/blocker-{status,block,update,uninstall,delai}
 /usr/lib/systemd/system/blocker-*.{service,timer,path}
-/etc/blocker-adulte/              local configuration
-/var/lib/blocker-adulte/          blocklists and state
+/etc/blocker-adulte/              proposed configuration, SMTP secret
+/var/lib/blocker-adulte/          lists, configuration in force, requests, reserve, reports
 /run/blocker-adulte/              runtime
 ```
 
@@ -312,15 +407,19 @@ and `/etc/mkinitcpio.conf` gains one hook name on Arch — only if you asked for
 
 ```bash
 sudo blocker-uninstall --status     # where do we stand
+sudo blocker-uninstall --request    # the request; the trusted person is told
+# ... 48 hours later ...
 sudo blocker-uninstall --phase 1    # what phase 1 does, plus a token
 sudo blocker-uninstall --phase 1 --token XXXXXX
 ```
 
-Four phases, two commands each. The token is drawn at random every time the
-phase is described, so the sequence cannot be scripted in advance: you have to
-read the screen. There is no timer and no hidden state — progress is derived
-from the **actual state of the system**, so rebooting, skipping a phase or
-redoing one cannot wedge the removal.
+A request first, then the delay, then four phases of two commands each. The
+token is drawn at random every time the phase is described, so the sequence
+cannot be scripted in advance. Phases 1 to 3 require the request past its due
+date; phase 4, which gives the machine normal DNS back, is never blocked.
+Progress is derived from the **actual state of the system**, so rebooting or
+redoing a phase cannot wedge the removal. `apt purge` follows the same rule: the
+package's `prerm` refuses without a request past its delay.
 
 `sudo blocker-uninstall --manual` prints the equivalent commands, **for this
 machine**: the package-removal command, the initramfs rebuild and the user
@@ -346,35 +445,41 @@ sudo tests/run_all.sh --tout     # including the intrusive watchdog test
 | `test_dns_leak.sh` | DNS cannot leave the machine except through the local resolver |
 | `test_doh_blocked.sh` | DoH, DoT, Tor and default VPNs are blocked |
 | `test_safesearch.sh` | SafeSearch enforced, legitimate services untouched |
-| `test_uninstall_phases.sh` | No single command removes everything, and it is not a trap |
+| `test_uninstall_phases.sh` | Removal waits for the delay, no shortcut, and it is not a trap |
+| `test_delai.sh` | A proposal is never executed, changes are classified correctly, a request cannot be backdated |
+| `test_listes.sh` | An outside list can only bring in valid blocks |
+| `test_coherence.sh` | Browsers, units, tables and constants are present everywhere they must be |
+| `test_nftables_reference.sh` | The check detects a removed rule, an emptied set, a foreign NAT rule (in a throwaway namespace) |
 | `test_browser_reinstall.sh` | A reinstalled browser gets its policy back |
 | `test_recovery_mode_hook.sh` | The initramfs image really carries the base rules |
-| `test_watchdog_cross_restart.sh` | Each service restarts the other — and neither fights a voluntary removal |
+| `test_watchdog_cross_restart.sh` | Each service restarts the other — and a removal flag without a request past its delay is removed |
 
 ---
 
 ## Known limits
 
-These will not go away; they are consequences of the design, and
-`blocker-status` prints them every time rather than letting you forget:
+Earlier versions listed the remaining ways around the tool, ranked by how easy
+they were. For the person the tool protects, such a list becomes, in a moment
+of craving, exactly the manual they are trying not to have at hand. It was
+removed. What remains are structural limits, stated without instructions:
 
-- root access is enough to remove everything, in four documented phases;
-- a live USB or another operating system bypasses everything;
-- direct access by IP address escapes any DNS filtering;
-- a private DoH endpoint on an unknown IP would get through;
-- a deliberate VPN on port 443 is indistinguishable from HTTPS;
-- Tor via obfs4 bridges entered by hand bypasses the block;
-- another device (phone, 4G hotspot) is out of reach;
+- root can do anything, including undoing the tool without going through it —
+  hence the account without rights and the administrator password in someone
+  else's hands; the delay, the hashes and the report make it slow and visible,
+  not impossible;
+- whatever does not go through this machine escapes it: another device,
+  another system;
+- DNS filtering only sees names, not content, and network blocks only cover
+  known addresses and protocols;
+- the filtering upstream is reached in plaintext: a network that hijacks DNS can
+  replace it — `blocker-status --probe` detects this, it cannot prevent it;
 - adult content **inside** general-purpose platforms (Reddit, X, Tumblr) is not
   covered by the lists — that is what `blocker-block` is for:
 
 ```bash
-sudo blocker-block reddit.com x.com    # block these and all their subdomains
+sudo blocker-block reddit.com x.com    # block these and all their subdomains, at once
 sudo blocker-block --liste             # show your personal list
 ```
-
-The honest summary: **yes for everyday impulse, no against someone who spends
-five minutes deliberately working around it.** That was the goal.
 
 ---
 
@@ -383,7 +488,8 @@ five minutes deliberately working around it.** That was the goal.
 | Symptom | Check |
 |---|---|
 | Nothing resolves at all | `journalctl -u blocker-resolver -n 30` — an invalid list is refused *before* startup, so this is usually the upstream |
-| A legitimate site is blocked | `sudo blocker-block --retirer <domain>` if you added it; otherwise `grep -rn '<domain>' /var/lib/blocker-adulte/blocklists/` |
+| A legitimate site is blocked | `sudo blocker-block --exception <domain>` (or `--remove` if you added it): a request, subject to the delay |
+| A blocker.conf change is ignored | `sudo blocker-delai` says whether it strengthens (applied), weakens (request and due date) or contains a rejected line |
 | SafeSearch not applied | `sudo systemctl restart blocker-resolver.service` — a SIGHUP does not reload `address=` entries |
 | A browser ignores its policy | `about:policies` in Firefox, `chrome://policy` in Chromium. Snap and Flatpak builds only read `/etc/…/policies` on recent versions |
 | Component 4 inactive on Arch | Add `blocker-adulte` to `HOOKS` in `/etc/mkinitcpio.conf`, or set `BLOCKER_MKINITCPIO_HOOK="oui"` |

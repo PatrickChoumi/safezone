@@ -33,6 +33,7 @@ Description: Blocage de contenu adulte, persistant et distribue
  .
  Rien n'est masque : aucun processus, fichier ou entree dpkg n'est cache,
  tous les emplacements d'installation sont documentes dans le README, et
- chaque reparation automatique est journalisee dans journalctl. La
- desinstallation complete est documentee etape par etape et automatisee par
- « blocker-uninstall --confirm ».
+ chaque reparation automatique est journalisee dans journalctl. Tout ce
+ qui affaiblit la protection, desinstallation comprise, passe par une demande
+ soumise a un delai (48 h par defaut), et un rapport hebdomadaire peut etre
+ envoye a une personne de confiance.

@@ -31,7 +31,7 @@ verifier "table inet blocker_adulte presente" nft list table inet blocker_adulte
 
 regles="$(nft list table inet blocker_adulte 2>/dev/null || true)"
 
-for motif in "dport 853" "784" "8853" "doh_ipv4" "doh_ipv6"; do
+for motif in "dport 853" "784" "8853" "doh_ipv4" "doh_ipv6" "auto-merge"; do
     if printf '%s' "${regles}" | grep -q -- "${motif}"; then
         ok "regle presente : ${motif}"
     else
@@ -82,6 +82,27 @@ else
     warn "curl absent, controle ignore"
 fi
 
+titre "3 bis. Adresses DoH chargees depuis un fichier"
+
+# Les adresses rafraichies vivaient en memoire du noyau seulement et
+# disparaissaient au premier rechargement des regles. Elles sont maintenant
+# dans un fichier recharge avec elles.
+DOHF=/var/lib/blocker-adulte/nft/doh.nft
+if [ -s "${DOHF}" ]; then
+    n_fichier="$(grep -c '^add element' "${DOHF}")"
+    ok "fichier d adresses DoH present (${n_fichier} bloc(s))"
+    if command -v unshare >/dev/null 2>&1 && unshare -n true 2>/dev/null; then
+        if unshare -n sh -c "nft -f /etc/nftables/blocker-adulte.nft && nft -f ${DOHF}" >/dev/null 2>&1; then
+            ok "le fichier se charge avec les regles (espace reseau jetable)"
+        else
+            ko "le fichier d adresses DoH est refuse par nft"
+        fi
+    fi
+else
+    warn "aucun fichier d adresses DoH : premiere mise a jour des listes pas encore faite ?"
+    info "sudo systemctl start blocker-list-update.service"
+fi
+
 titre "4. Le resolveur local filtre les noms des endpoints DoH"
 
 if command -v dig >/dev/null 2>&1; then
@@ -111,10 +132,11 @@ verifier_antiproxy() {
             else
                 ko "Firefox : une extension VPN/proxy reste installable (${fichier})"
             fi
-            if grep -A4 '"Proxy"' "${fichier}" | grep -q '"Locked": *true'; then
-                ok "Firefox : parametres proxy verrouilles"
+            if grep -A4 '"Proxy"' "${fichier}" | grep -q '"Locked": *true' && \
+               grep -A4 '"Proxy"' "${fichier}" | grep -q '"Mode": *"none"'; then
+                ok "Firefox : proxy verrouille sur « aucun proxy »"
             else
-                ko "Firefox : parametres proxy non verrouilles"
+                ko "Firefox : proxy non verrouille sur « aucun proxy »"
             fi
             ;;
         *)
@@ -124,19 +146,26 @@ verifier_antiproxy() {
             else
                 ko "${famille} : une extension proxy reste installable (${fichier})"
             fi
-            if grep -q '"ProxyMode": *"system"' "${fichier}"; then
-                ok "${famille} : mode proxy impose par policy"
+            if grep -q '"ProxyMode": *"direct"' "${fichier}"; then
+                ok "${famille} : proxy verrouille sur « direct »"
             else
-                ko "${famille} : mode proxy non impose"
+                ko "${famille} : proxy non verrouille sur « direct »"
+            fi
+            if grep -q '"BrowserGuestModeEnabled": *false' "${fichier}"; then
+                ok "${famille} : session invite desactivee"
+            else
+                ko "${famille} : session invite disponible"
             fi
             ;;
     esac
 }
 
-verifier_antiproxy /etc/firefox/policies/policies.json firefox
-verifier_antiproxy /etc/opt/chrome/policies/managed/blocker-adulte.json chrome
-verifier_antiproxy /etc/chromium/policies/managed/blocker-adulte.json chromium
-verifier_antiproxy /etc/brave/policies/managed/blocker-adulte.json brave
+while IFS='|' read -r dir fichier famille; do
+    case "${famille}" in
+        firefox|firefox-esr|librewolf|waterfox|floorp) verifier_antiproxy "${dir}/${fichier}" firefox ;;
+        *) verifier_antiproxy "${dir}/${fichier}" "${famille}" ;;
+    esac
+done < <(blocker_browser_targets)
 
 titre "6. Tunnels : Tor et VPN par defaut"
 
@@ -199,15 +228,12 @@ fi
 titre "8. Policies navigateur : DoH desactive"
 
 trouve=0
-for f in /etc/firefox/policies/policies.json \
-         /etc/opt/chrome/policies/managed/blocker-adulte.json \
-         /etc/chromium/policies/managed/blocker-adulte.json \
-         /etc/opt/chromium/policies/managed/blocker-adulte.json \
-         /etc/brave/policies/managed/blocker-adulte.json; do
+while IFS='|' read -r dir fichier _famille; do
+    f="${dir}/${fichier}"
     [ -s "${f}" ] || continue
     trouve=$((trouve + 1))
     case "${f}" in
-        */firefox/*)
+        */policies.json)
             if grep -q '"DNSOverHTTPS"' "${f}" && grep -q '"Locked": *true' "${f}"; then
                 ok "Firefox : DoH desactive et verrouille (${f})"
             else
@@ -222,7 +248,7 @@ for f in /etc/firefox/policies/policies.json \
             fi
             ;;
     esac
-done
+done < <(blocker_browser_targets)
 
 if [ "${trouve}" -eq 0 ]; then
     warn "aucune policy navigateur deployee — aucun navigateur detecte sur cette machine ?"

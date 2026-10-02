@@ -12,7 +12,8 @@
 #
 # Ce test ne desinstalle RIEN par defaut : il verifie les gardes sans les
 # franchir. Avec --pour-de-vrai il execute les quatre phases et verifie qu'il ne
-# reste aucun residu — a ne lancer que sur une machine jetable.
+# reste aucun residu — a ne lancer que sur une machine jetable, et seulement
+# une fois une demande de desinstallation arrivee a echeance.
 #
 # sudo tests/test_uninstall_phases.sh [--pour-de-vrai]
 
@@ -55,6 +56,54 @@ for arg in "--tout" "--force" "--yes" "-y"; do
     fi
 done
 
+titre "1 bis. La desinstallation attend le delai"
+
+# Sans demande arrivee a echeance, la phase 1 ne delivre pas de jeton : elle
+# indique la demande a deposer et l'echeance.
+etat_demande="$("${UNINST}" --etat 2>&1)"
+deja_mure=0
+printf '%s' "${etat_demande}" | grep -q 'phase 1 possible jusqu' && deja_mure=1
+
+if [ "${deja_mure}" -eq 1 ]; then
+    warn "une demande de desinstallation est deja arrivee a echeance sur cette machine"
+else
+    sortie="$("${UNINST}" --phase 1 2>&1)"
+    if printf '%s' "${sortie}" | grep -qE 'jeton [A-HJ-NP-Z2-9]{6}'; then
+        ko "la phase 1 delivre un jeton sans demande arrivee a echeance"
+    else
+        ok "sans demande arrivee a echeance, la phase 1 ne delivre aucun jeton"
+    fi
+    if printf '%s' "${sortie}" | grep -qE 'demander|Phase 1 possible'; then
+        ok "le refus indique la demande a deposer ou son echeance"
+    else
+        ko "le refus n explique pas quoi faire"
+    fi
+
+    # Une demande deposee maintenant n'ouvre rien tout de suite. Elle est
+    # annulee aussitot : le test ne doit pas laisser de demande derriere lui.
+    avait_demande=0
+    printf '%s' "${etat_demande}" | grep -q 'Phase 1 possible a partir' && avait_demande=1
+    if [ "${avait_demande}" -eq 0 ]; then
+        "${UNINST}" --demander >/dev/null 2>&1
+        if "${UNINST}" --phase 1 2>&1 | grep -qE 'jeton [A-HJ-NP-Z2-9]{6}'; then
+            ko "une demande deposee a l instant ouvre deja la phase 1"
+        else
+            ok "une demande deposee a l instant n ouvre pas la phase 1"
+        fi
+        for d in /var/lib/blocker-adulte/delai/demandes/*-desinstallation-*; do
+            case "${d}" in *.*) continue ;; esac
+            [ -e "${d}" ] && /usr/sbin/blocker-delai --annuler "$(basename "${d}")" >/dev/null 2>&1
+        done
+        if "${UNINST}" --etat 2>&1 | grep -q 'Phase 1 possible a partir'; then
+            ko "la demande de test n a pas pu etre annulee"
+        else
+            ok "demande de test annulee"
+        fi
+    else
+        warn "une demande est deja en attente ici : controle de depot ignore"
+    fi
+fi
+
 titre "2. Une phase sans jeton n'execute rien"
 
 avant_unites="$(systemctl is-enabled blocker-guard.service 2>/dev/null || echo inconnu)"
@@ -72,7 +121,9 @@ titre "3. Le jeton est tire au hasard a chaque affichage"
 j1="$("${UNINST}" --phase 1 2>/dev/null | grep -oE 'jeton [A-HJ-NP-Z2-9]{6}' | head -1 | awk '{print $2}')"
 j2="$("${UNINST}" --phase 1 2>/dev/null | grep -oE 'jeton [A-HJ-NP-Z2-9]{6}' | head -1 | awk '{print $2}')"
 
-if [ -n "${j1}" ] && [ -n "${j2}" ]; then
+if [ "${deja_mure}" -eq 0 ]; then
+    info "pas de demande arrivee a echeance : controles des jetons ignores (sections 3 et 4)."
+elif [ -n "${j1}" ] && [ -n "${j2}" ]; then
     ok "un jeton est bien delivre (${j1}, puis ${j2})"
     if [ "${j1}" != "${j2}" ]; then
         ok "le jeton change a chaque affichage : impossible a scripter d'avance"
@@ -86,7 +137,7 @@ fi
 titre "4. Un jeton perime ou faux est refuse"
 
 # j1 a ete remplace par j2 : il ne doit plus fonctionner.
-if [ -n "${j1}" ] && [ "${j1}" != "${j2}" ]; then
+if [ "${deja_mure}" -eq 1 ] && [ -n "${j1}" ] && [ "${j1}" != "${j2}" ]; then
     if "${UNINST}" --phase 1 --jeton "${j1}" 2>&1 | grep -q 'invalide ou expire'; then
         ok "un jeton perime est refuse"
     else
@@ -94,8 +145,14 @@ if [ -n "${j1}" ] && [ "${j1}" != "${j2}" ]; then
     fi
 fi
 
-if "${UNINST}" --phase 1 --jeton ZZZZZZ 2>&1 | grep -q 'invalide ou expire'; then
-    ok "un jeton inconnu est refuse"
+if [ "${deja_mure}" -eq 1 ]; then
+    if "${UNINST}" --phase 1 --jeton ZZZZZZ 2>&1 | grep -q 'invalide ou expire'; then
+        ok "un jeton inconnu est refuse"
+    else
+        ko "un jeton inconnu est accepte"
+    fi
+elif "${UNINST}" --phase 1 --jeton ZZZZZZ 2>&1 | grep -qE 'pas encore|invalide'; then
+    ok "un jeton inconnu est refuse (et la phase 1 n est de toute facon pas ouverte)"
 else
     ko "un jeton inconnu est accepte"
 fi
@@ -126,7 +183,8 @@ fi
 MANUEL="$("${UNINST}" --manuel 2>&1)"
 
 # Les etapes qui ne dependent pas de la distribution.
-for attendu in 'chattr -i' 'nft delete table' '/var/lib/blocker-adulte'; do
+for attendu in 'blocker-uninstall --demander' 'chattr -i' 'nft delete table inet blocker_adulte_tunnels' \
+               '/var/lib/blocker-adulte' 'blocker-rapport.timer'; do
     if printf '%s' "${MANUEL}" | grep -qF "${attendu}"; then
         ok "la procedure manuelle couvre : ${attendu}"
     else
@@ -195,6 +253,14 @@ if [ "${REEL}" -eq 0 ]; then
 fi
 
 titre "8. Desinstallation reelle des quatre phases"
+
+if [ "${deja_mure}" -eq 0 ]; then
+    warn "aucune demande de desinstallation arrivee a echeance : rien n est desinstalle."
+    info "Deposer la demande, attendre le delai, puis relancer :"
+    info "  sudo blocker-uninstall --demander"
+    bilan
+    exit $?
+fi
 
 for p in 1 2 3 4; do
     jeton="$("${UNINST}" --phase "${p}" 2>/dev/null \

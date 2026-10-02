@@ -16,6 +16,11 @@ Wants=blocker-guard.service
 [Service]
 Type=notify
 NotifyAccess=all
+# Les regles chargees par nftables.service n'ont pas encore les adresses des
+# amonts choisis dans blocker.conf : sans elles, un amont hors du jeu ecrit en
+# dur serait redirige vers ce resolveur lui-meme. Elles sont chargees ici, avant
+# dnsmasq. Le « - » : un echec ici ne doit pas empecher le resolveur de partir.
+ExecStartPre=-/usr/lib/blocker-adulte/blocker-apply-nftables --demarrage
 ExecStart=/usr/lib/blocker-adulte/blocker-resolver-run
 
 # Le superviseur envoie WATCHDOG=1 toutes les 15 s ; au-dela de 60 s sans

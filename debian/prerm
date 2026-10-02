@@ -13,8 +13,26 @@ set -e
 LIBDIR=/usr/lib/blocker-adulte
 RUNDIR=/run/blocker-adulte
 
+# Le retrait par le gestionnaire de paquets suit la meme regle que
+# blocker-uninstall : une demande de desinstallation deposee, et le delai
+# passe. Sans elle, « apt purge » s'arrete ici, avec la commande a lancer.
+#
+# La bibliotheque est ecrite pour bash : ce script, lance par dpkg sous
+# /bin/sh, ne peut pas la sourcer lui-meme.
+retrait_autorise() {
+    [ -r "${LIBDIR}/blocker-common.sh" ] || return 0
+    bash -c ". '${LIBDIR}/blocker-common.sh' && blocker_retrait_autorise" 2>/dev/null
+}
+
 case "$1" in
     remove|deconfigure|upgrade|failed-upgrade)
+
+        if [ "$1" = "remove" ] && ! retrait_autorise; then
+            echo "blocker-adulte : retrait refuse — aucune demande de desinstallation arrivee a echeance." >&2
+            echo "blocker-adulte : removal refused — no uninstall request past its delay." >&2
+            echo "  sudo blocker-uninstall --demander     (puis attendre le delai / then wait for the delay)" >&2
+            exit 1
+        fi
 
         if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
             # Signale aux watchdogs encore vivants que le retrait est
@@ -29,7 +47,7 @@ case "$1" in
             # premier. Chaque unite est desactivee avant d'etre arretee.
             for u in blocker-guard.service blocker-resolver.service \
                      blocker-selfheal.timer blocker-list-update.timer \
-                     blocker-policies.path; do
+                     blocker-policies.path blocker-rapport.timer; do
                 deb-systemd-invoke stop "$u" >/dev/null 2>&1 || \
                     systemctl stop "$u" >/dev/null 2>&1 || true
             done
@@ -37,10 +55,15 @@ case "$1" in
 
         # Sans cela, dpkg ne peut pas supprimer les fichiers immuables.
         if [ -r "${LIBDIR}/blocker-common.sh" ] && command -v chattr >/dev/null 2>&1; then
-            # shellcheck disable=SC1091
-            . "${LIBDIR}/blocker-common.sh"
-            blocker_unlock_all 2>/dev/null || true
+            bash -c ". '${LIBDIR}/blocker-common.sh' && blocker_unlock_all" 2>/dev/null || true
         fi
+        # Zone d'etat, sauf les demandes : changer leurs attributs changerait
+        # leur ctime, et donc leur date. Le postrm « purge » leve le reste.
+        for d in /var/lib/blocker-adulte/*; do
+            [ -e "$d" ] || continue
+            [ "$d" = /var/lib/blocker-adulte/delai ] && continue
+            chattr -R -i -a "$d" 2>/dev/null || true
+        done
         ;;
 
     *)

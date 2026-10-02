@@ -4,12 +4,31 @@
 # Installe dans : /usr/lib/blocker-adulte/blocker-apply-nftables
 #
 # Usage :
-#   blocker-apply-nftables            charge les regles si elles manquent
-#   blocker-apply-nftables --force    recharge inconditionnellement
-#   blocker-apply-nftables --check    ne charge rien, code retour 0 si conforme
+#   blocker-apply-nftables              charge les regles si elles ne sont pas conformes
+#   blocker-apply-nftables --force      recharge inconditionnellement
+#   blocker-apply-nftables --check      ne charge rien, code retour 0 si conforme
+#   blocker-apply-nftables --etrangeres liste les regles NAT d'autres tables
+#                                       qui visent le port 53 (code 1 s'il y en a)
+#   blocker-apply-nftables --demarrage  comme sans argument, sans parler de
+#                                       reparation : au demarrage, les adresses
+#                                       (amonts, DoH) ne sont jamais encore la,
+#                                       nftables.service ne chargeant que les
+#                                       regles. Lance avant le resolveur.
 #
 # Appele par : install.sh, le postinst, blocker-guard, blocker-selfheal et le
 # dispatcher NetworkManager.
+#
+# CE QUE « CONFORME » VEUT DIRE
+#
+# Le controle se contentait de verifier que les tables existaient et
+# contenaient « dport 53 » et « dport 853 ». Une regle retiree, une exemption
+# elargie, un jeu d'adresses vide passaient inapercus.
+#
+# Le jeu de regles actif est desormais compare, table par table, a une
+# REFERENCE : les memes fichiers charges dans un espace reseau jetable
+# (« unshare -n »), ou ils ne touchent a rien. Les deux sorties de
+# « nft list table » doivent etre identiques. La reference n'est recalculee
+# que lorsque les fichiers changent ; elle est gardee en memoire dans /run.
 
 set -uo pipefail
 
@@ -17,6 +36,9 @@ set -uo pipefail
 
 RULES_FILE="/etc/nftables/blocker-adulte.nft"
 TUNNELS_FILE="/etc/nftables/blocker-adulte-tunnels.nft"
+# Adresses chargees avec les regles : amonts choisis dans blocker.conf
+# (blocker-upstream) et resolveurs DoH (blocker-doh-refresh).
+ELEMENTS="${BLOCKER_NFTDIR}/amonts.nft ${BLOCKER_NFTDIR}/doh.nft"
 
 # Le blocage des tunnels est le seul jeu de regles susceptible de gener un
 # usage legitime (VPN d'entreprise). Il vit dans une table separee, chargee ou
@@ -28,25 +50,12 @@ tunnels_demandes() {
     return 0
 }
 
-appliquer_tunnels() {
-    if tunnels_demandes; then
-        [ -r "${TUNNELS_FILE}" ] || return 0
-        if nft -f "${TUNNELS_FILE}"; then
-            blocker_info "$(m "blocage des tunnels actif" "tunnel blocking active") (Tor, WireGuard, OpenVPN, IPsec, PPTP)"
-        else
-            blocker_err "$(m "chargement de" "loading") ${TUNNELS_FILE} $(m "en echec" "failed")"
-        fi
-    elif nft list table inet blocker_adulte_tunnels >/dev/null 2>&1; then
-        nft delete table inet blocker_adulte_tunnels 2>/dev/null && \
-            blocker_notice "$(m "blocage des tunnels desactive par configuration, table retiree" \
-                    "tunnel blocking disabled by configuration, table removed")"
-    fi
-}
-
 MODE="ensure"
 case "${1:-}" in
     --force) MODE="force" ;;
     --check) MODE="check" ;;
+    --etrangeres|--foreign) MODE="etrangeres" ;;
+    --demarrage|--boot) MODE="demarrage" ;;
     "")      MODE="ensure" ;;
     *)       blocker_err "$(m "argument inconnu" "unknown argument") : $1"; exit 2 ;;
 esac
@@ -56,12 +65,14 @@ if ! command -v nft >/dev/null 2>&1; then
     exit 1
 fi
 
-# Les trois tables que ce projet doit voir chargees.
+# Les tables que ce projet doit voir chargees.
 expected_tables() {
     printf '%s\n' \
         "ip blocker_adulte_nat" \
         "ip6 blocker_adulte_nat" \
-        "inet blocker_adulte"
+        "inet blocker_adulte" \
+        "ip blocker_adulte_base_nat" \
+        "inet blocker_adulte_base"
     tunnels_demandes && printf '%s\n' "inet blocker_adulte_tunnels"
     return 0
 }
@@ -76,15 +87,83 @@ missing_tables() {
     return 0
 }
 
-# Une table peut exister mais avoir ete videe (« nft flush table »). On verifie
-# donc aussi qu'au moins une regle de redirection DNS est bien presente.
+# Sortie de « nft list table » pour toutes les tables attendues, dans l'ordre.
+lister_tables() {
+    local family name
+    while read -r family name; do
+        printf '# %s %s\n' "${family}" "${name}"
+        nft list table "${family}" "${name}" 2>/dev/null || printf 'ABSENTE\n'
+    done < <(expected_tables)
+}
+
+# ---------------------------------------------------------------------------
+# Reference
+# ---------------------------------------------------------------------------
+# Cle de la reference : contenu des fichiers charges + choix des tunnels + UID
+# du resolveur (nft l'affiche en clair). Une reference calculee avec d'autres
+# fichiers ne sert jamais.
+cle_reference() {
+    {
+        cat "${RULES_FILE}" 2>/dev/null
+        tunnels_demandes && cat "${TUNNELS_FILE}" 2>/dev/null
+        local f
+        for f in ${ELEMENTS}; do cat "${f}" 2>/dev/null; done
+        getent passwd "${BLOCKER_USER}" 2>/dev/null
+        nft --version 2>/dev/null
+    } | sha256sum | cut -c1-16
+}
+
+# Charge les fichiers dans un espace reseau jetable et ecrit la liste des
+# tables obtenues. Echoue proprement si l'isolement n'est pas disponible
+# (conteneur sans droits, noyau ancien) : on retombe alors sur le controle
+# minimal.
+calculer_reference() {
+    local sortie="$1" f charge
+    command -v unshare >/dev/null 2>&1 || return 1
+    charge="nft -f '${RULES_FILE}'"
+    if tunnels_demandes && [ -r "${TUNNELS_FILE}" ]; then
+        charge="${charge} && nft -f '${TUNNELS_FILE}'"
+    fi
+    for f in ${ELEMENTS}; do
+        [ -r "${f}" ] && charge="${charge} && { nft -f '${f}' || true; }"
+    done
+    # La fonction de listage est rejouee dans le sous-shell isole.
+    unshare -n bash -c "
+        set -u
+        ${charge} || exit 1
+        $(declare -f expected_tables tunnels_demandes lister_tables)
+        BLOCKER_BLOCK_TUNNELS='${BLOCKER_BLOCK_TUNNELS:-oui}'
+        lister_tables
+    " > "${sortie}" 2>/dev/null
+}
+
+# Chemin de la reference a jour, ou rien si elle ne peut pas etre calculee.
+reference() {
+    local cle fichier
+    [ -r "${RULES_FILE}" ] || return 1
+    blocker_ensure_rundir
+    cle="$(cle_reference)"
+    fichier="${BLOCKER_RUNDIR}/nft-reference-${cle}"
+    if [ ! -s "${fichier}" ]; then
+        if ! calculer_reference "${fichier}.tmp"; then
+            rm -f "${fichier}.tmp"
+            return 1
+        fi
+        find "${BLOCKER_RUNDIR}" -maxdepth 1 -name 'nft-reference-*' ! -name "nft-reference-${cle}*" -delete 2>/dev/null
+        mv -f "${fichier}.tmp" "${fichier}"
+    fi
+    printf '%s\n' "${fichier}"
+}
+
+# Controle minimal, quand la reference est indisponible : tables presentes et
+# regles essentielles en place.
 #
-# Attention : ce script tourne sous « set -o pipefail ». Un « nft list | grep -q »
-# renvoie 141 quand grep sort des la premiere correspondance et que nft, encore
-# en train d'ecrire, prend un SIGPIPE — le controle echouerait alors que la
-# regle est bien la. On capture donc la sortie avant de la filtrer.
+# Ce script tourne sous « set -o pipefail » : un « nft list | grep -q » peut
+# renvoyer 141 par SIGPIPE alors que la regle est bien la. On capture donc la
+# sortie avant de la filtrer.
 regle_presente() {
     local table="$1" motif="$2" sortie
+    # shellcheck disable=SC2086
     sortie="$(nft list table ${table} 2>/dev/null)" || return 1
     case "${sortie}" in
         *"${motif}"*) return 0 ;;
@@ -92,29 +171,69 @@ regle_presente() {
     esac
 }
 
-redirect_rule_present() {
-    regle_presente "ip blocker_adulte_nat" "dport 53"
+controle_minimal() {
+    [ -z "$(missing_tables)" ] && \
+        regle_presente "ip blocker_adulte_nat" "dport 53" && \
+        regle_presente "inet blocker_adulte" "dport 853"
 }
 
-doh_rule_present() {
-    regle_presente "inet blocker_adulte" "dport 853"
-}
-
+# 0 conforme, 1 non conforme. Ecrit sur la sortie standard un resume de
+# l'ecart quand il y en a un.
 ruleset_conforme() {
-    [ -z "$(missing_tables)" ] && redirect_rule_present && doh_rule_present
+    local ref actuel
+    if ref="$(reference)"; then
+        actuel="$(lister_tables)"
+        if [ "${actuel}" = "$(cat "${ref}")" ]; then
+            return 0
+        fi
+        diff <(cat "${ref}") <(printf '%s\n' "${actuel}") 2>/dev/null \
+            | grep -E '^[<>]' | head -6
+        return 1
+    fi
+    controle_minimal
 }
 
-if [ "${MODE}" = "check" ]; then
-    if ruleset_conforme; then
-        exit 0
+# ---------------------------------------------------------------------------
+# Regles NAT etrangeres sur le port 53
+# ---------------------------------------------------------------------------
+# Une autre table nat qui reecrit le port 53 peut detourner le DNS avant ou a
+# cote de nous. On ne touche jamais aux regles d'autrui : on les signale.
+nat_etrangeres() {
+    nft list ruleset 2>/dev/null | awk '
+        /^table / { table = $2 " " $3; nat = 0; next }
+        /^[[:space:]]*chain / { chaine = $2; nat = 0; next }
+        /type nat hook/ { nat = 1; next }
+        nat && table !~ /blocker_adulte/ && /dport (53|domain)([^0-9]|$)|dport \{[^}]*([^0-9]53|domain)[,} ]/ {
+            ligne = $0; gsub(/^[[:space:]]+/, "", ligne)
+            print table " / " chaine " : " ligne
+        }
+    '
+    if command -v iptables-legacy-save >/dev/null 2>&1; then
+        iptables-legacy-save -t nat 2>/dev/null | grep -E -- '--dport 53( |$)' \
+            | sed 's/^/iptables-legacy : /'
     fi
-    missing="$(missing_tables | tr '\n' ',' | sed 's/,$//')"
-    blocker_warn "$(m "regles nftables non conformes (manquantes ou videes)" \
-                  "nftables rules non-compliant (missing or emptied)") : ${missing:-$(m "chaines vides" "empty chains")}"
+    return 0
+}
+
+if [ "${MODE}" = "etrangeres" ]; then
+    trouvees="$(nat_etrangeres)"
+    [ -z "${trouvees}" ] && exit 0
+    printf '%s\n' "${trouvees}"
     exit 1
 fi
 
-if [ "${MODE}" = "ensure" ] && ruleset_conforme; then
+if [ "${MODE}" = "check" ]; then
+    if ecart="$(ruleset_conforme)"; then
+        exit 0
+    fi
+    missing="$(missing_tables | tr '\n' ',' | sed 's/,$//')"
+    blocker_warn "$(m "regles nftables non conformes a la reference" \
+                      "nftables rules differ from the reference") : ${missing:-$(m "contenu modifie" "content modified")}"
+    [ -n "${ecart}" ] && printf '%s\n' "${ecart}" | sed 's/^/    /' >&2
+    exit 1
+fi
+
+if { [ "${MODE}" = "ensure" ] || [ "${MODE}" = "demarrage" ]; } && ruleset_conforme >/dev/null; then
     exit 0
 fi
 
@@ -132,9 +251,11 @@ fi
 
 if [ "${MODE}" = "force" ]; then
     blocker_info "$(m "rechargement force des regles nftables depuis" "forced reload of the nftables rules from") ${RULES_FILE}"
+elif [ "${MODE}" = "demarrage" ]; then
+    blocker_info "$(m "chargement des regles et des adresses au demarrage depuis" "loading the rules and addresses at boot from") ${RULES_FILE}"
 else
-    blocker_repair "$(m "regles nftables absentes ou incompletes, rechargement depuis" \
-                    "nftables rules missing or incomplete, reloading from") ${RULES_FILE}"
+    blocker_repair "$(m "regles nftables absentes ou modifiees, rechargement depuis" \
+                    "nftables rules missing or modified, reloading from") ${RULES_FILE}"
 fi
 
 if ! nft -f "${RULES_FILE}"; then
@@ -142,10 +263,28 @@ if ! nft -f "${RULES_FILE}"; then
     exit 1
 fi
 
-appliquer_tunnels
+# Les adresses viennent apres les regles, dans des transactions separees : un
+# fichier d'adresses abime ne doit pas empecher le chargement des regles.
+for f in ${ELEMENTS}; do
+    [ -r "${f}" ] || continue
+    nft -f "${f}" 2>/dev/null || \
+        blocker_warn "$(m "adresses non chargees depuis" "addresses not loaded from") ${f}"
+done
 
-if ruleset_conforme; then
-    blocker_info "$(m "regles nftables actives" "nftables rules active") (ip/ip6 blocker_adulte_nat, inet blocker_adulte)"
+if tunnels_demandes; then
+    if [ -r "${TUNNELS_FILE}" ] && nft -f "${TUNNELS_FILE}"; then
+        blocker_info "$(m "blocage des tunnels actif" "tunnel blocking active") (Tor, WireGuard, OpenVPN, IPsec, PPTP)"
+    else
+        blocker_err "$(m "chargement de" "loading") ${TUNNELS_FILE} $(m "en echec" "failed")"
+    fi
+elif nft list table inet blocker_adulte_tunnels >/dev/null 2>&1; then
+    nft delete table inet blocker_adulte_tunnels 2>/dev/null && \
+        blocker_notice "$(m "blocage des tunnels desactive par configuration, table retiree" \
+                "tunnel blocking disabled by configuration, table removed")"
+fi
+
+if ruleset_conforme >/dev/null; then
+    blocker_info "$(m "regles nftables actives et conformes" "nftables rules active and compliant")"
     exit 0
 fi
 

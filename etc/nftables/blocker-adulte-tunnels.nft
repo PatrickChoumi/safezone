@@ -10,17 +10,12 @@
 # susceptibles de gener un usage legitime (VPN d'entreprise, teletravail). Les
 # desactiver ne doit pas demander de toucher au jeu de regles principal.
 #
-# CE QUE CES REGLES FONT ET NE FONT PAS
-#
-# Elles ne « bloquent pas les VPN » au sens general : c'est impossible sans
-# refuser tout le trafic sortant, ce qui rendrait la machine inutilisable. Un
-# tunnel deliberement configure sur le port 443 en TCP reste indiscernable d'une
-# connexion HTTPS ordinaire et passera.
+# CE QUE CES REGLES FONT
 #
 # Elles ferment les configurations PAR DEFAUT, qui couvrent la quasi-totalite
-# des cas ou l'on installe un client en trois clics : c'est le niveau de
-# friction vise. Qui sait deplacer WireGuard sur le port 443 passera — et aura
-# fait une demarche deliberee, pas impulsive.
+# des cas ou l'on installe un client en trois clics. Elles ne pretendent pas
+# bloquer tout tunnel possible : ce serait impossible sans refuser tout le
+# trafic sortant, ce qui rendrait la machine inutilisable.
 
 table inet blocker_adulte_tunnels
 delete table inet blocker_adulte_tunnels
@@ -29,18 +24,10 @@ table inet blocker_adulte_tunnels {
     # -----------------------------------------------------------------------
     # Autorites d'annuaire Tor
     # -----------------------------------------------------------------------
-    # Tor Browser est portable : il se telecharge, s'extrait et se lance sans
-    # aucun droit root. C'est, apres les extensions de navigateur, le
-    # contournement le plus facile du dispositif.
-    #
-    # Son point faible : pour demarrer, le client doit joindre l'une des neuf
-    # autorites d'annuaire, dont les adresses sont FIXES, PUBLIQUES et codees
-    # en dur dans le logiciel lui-meme. Sans elles, le bootstrap echoue et le
-    # navigateur reste bloque sur « Etablissement d'une connexion ».
-    #
-    # Contournement possible : les bridges obfs4, qu'il faut demander
-    # explicitement a Tor puis saisir a la main. C'est precisement la demarche
-    # deliberee que l'outil n'a pas vocation a empecher.
+    # Tor Browser est portable : il se lance sans aucun droit root. Pour
+    # demarrer, il doit joindre l'une des autorites d'annuaire, dont les
+    # adresses sont fixes, publiques et codees en dur dans le logiciel. Sans
+    # elles, le bootstrap echoue.
     #
     # Ces adresses changent tres rarement (quelques fois par decennie). Si Tor
     # demarre malgre tout, verifier la liste a jour dans le fichier
@@ -82,8 +69,8 @@ table inet blocker_adulte_tunnels {
     chain output {
         type filter hook output priority filter; policy accept;
 
-        # Le resolveur local n'est pas concerne.
-        meta skuid "blocker-adulte" accept
+        # Pas d'exemption pour l'utilisateur blocker-adulte : le resolveur ne
+        # sort que vers ses amonts, sur le port 53, que ces regles ne visent pas.
         ip daddr 127.0.0.0/8 accept
         ip6 daddr ::1 accept
 

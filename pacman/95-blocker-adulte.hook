@@ -21,6 +21,14 @@ Target = chromium
 Target = brave
 Target = brave-bin
 Target = google-chrome
+Target = librewolf
+Target = librewolf-bin
+Target = waterfox
+Target = waterfox-bin
+Target = floorp
+Target = floorp-bin
+Target = microsoft-edge-stable-bin
+Target = vivaldi
 
 [Action]
 Description = blocker-adulte : reapplication des policies navigateur

@@ -27,10 +27,16 @@ case "${ACTION}" in
         ;;
 esac
 
-# Retrait volontaire en cours : on ne reapplique rien.
+# Retrait volontaire en cours : on ne reapplique rien. Le drapeau seul ne
+# suffit pas — il faut une demande de desinstallation arrivee a echeance, que la
+# bibliotheque sait reconnaitre.
 if [ -e /run/blocker-adulte/uninstall-in-progress ]; then
-    log "retrait volontaire en cours, aucune reapplication"
-    exit 0
+    if [ ! -r /usr/lib/blocker-adulte/blocker-common.sh ] || \
+       bash -c '. /usr/lib/blocker-adulte/blocker-common.sh && blocker_optout_active' 2>/dev/null; then
+        log "retrait volontaire en cours, aucune reapplication"
+        exit 0
+    fi
+    log "drapeau de retrait sans demande arrivee a echeance : ignore"
 fi
 
 # --- 1. Regles nftables ----------------------------------------------------

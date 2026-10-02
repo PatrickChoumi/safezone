@@ -12,10 +12,9 @@
 #      croisee ;
 #   3. notifie le watchdog systemd (WatchdogSec) a chaque passe.
 #
-# Il ne relance RIEN si la procedure de desinstallation documentee est en cours
-# (drapeau /run/blocker-adulte/uninstall-in-progress) ou si blocker-guard a ete
-# desactive durablement (systemctl disable). Voir README, « Ce que l'outil ne
-# fait pas ».
+# Il ne relance RIEN si une desinstallation a ete demandee, que le delai est
+# passe et qu'elle a commence (drapeau /run/blocker-adulte/uninstall-in-progress,
+# ou blocker-guard desactive). Voir README, « Le delai ».
 
 set -uo pipefail
 

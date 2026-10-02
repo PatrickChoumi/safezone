@@ -28,24 +28,22 @@ exiger_installe
 REEL=0
 [ "${1:-}" = "--reinstall-reel" ] && REEL=1
 
-POLICIES="
-/etc/firefox/policies/policies.json
-/etc/opt/chrome/policies/managed/blocker-adulte.json
-/etc/chromium/policies/managed/blocker-adulte.json
-/etc/opt/chromium/policies/managed/blocker-adulte.json
-/etc/brave/policies/managed/blocker-adulte.json
-"
+# La liste vient de la bibliotheque, qui est la source de verite.
+# shellcheck disable=SC1091
+. /usr/lib/blocker-adulte/blocker-common.sh
+POLICIES="$(blocker_browser_targets | awk -F'|' '{print $1 "/" $2}')"
 
 # Un navigateur est-il reellement installe ? Cette question decide du mode du
 # test. On ne peut pas la deduire de la presence des fichiers de policy : un
 # deploiement force anterieur (--all) en aurait laisse, sans navigateur derriere.
 un_navigateur_installe() {
-    for c in firefox google-chrome google-chrome-stable chromium chromium-browser brave-browser; do
+    for c in firefox firefox-esr librewolf google-chrome google-chrome-stable chromium \
+             chromium-browser brave-browser microsoft-edge vivaldi; do
         command -v "$c" >/dev/null 2>&1 && return 0
     done
     for d in /usr/lib/firefox /snap/firefox /opt/firefox /opt/google/chrome \
              /usr/lib/chromium /usr/lib/chromium-browser /snap/chromium \
-             /opt/brave.com/brave; do
+             /opt/brave.com/brave /opt/microsoft/msedge /opt/vivaldi; do
         [ -d "$d" ] && return 0
     done
     return 1
@@ -108,8 +106,6 @@ titre "2. Reaction a la reinstallation d un navigateur (composant 5)"
 # pacman. L'unite « path » systemd, elle, existe partout et couvre en plus les
 # navigateurs installes par snap ou flatpak, que le gestionnaire de paquets ne
 # voit pas. Au moins l'un des deux doit etre en place.
-# shellcheck disable=SC1091
-. /usr/lib/blocker-adulte/blocker-common.sh
 
 mecanismes=0
 
@@ -151,7 +147,9 @@ else
     warn "systemd absent, unite path non verifiable"
 fi
 
-if [ "${mecanismes}" -eq 0 ]; then
+if [ "${mecanismes}" -eq 0 ] && [ ! -d /run/systemd/system ]; then
+    warn "systemd absent : l unite path ne peut pas tourner ici, controle non concluant"
+elif [ "${mecanismes}" -eq 0 ]; then
     ko "aucun mecanisme de reaction immediate : seul le self-heal repassera (5 min)"
 else
     ok "${mecanismes} mecanisme(s) de reaction immediate en place"

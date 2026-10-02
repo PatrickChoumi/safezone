@@ -25,6 +25,25 @@ fi
 ecarts=0
 note() { ecarts=$((ecarts + 1)); blocker_repair "$*"; }
 
+# ---------------------------------------------------------------------------
+# 0. Retrait commence sans demande arrivee a echeance
+# ---------------------------------------------------------------------------
+# Drapeau pose a la main, unite desactivee ou masquee, timer arrete : remis en
+# place, avec le rappel du seul chemin qui aboutit (blocker-uninstall
+# --demander, puis le delai).
+if blocker_reparer_retrait_non_autorise; then
+    ecarts=$((ecarts + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 0 bis. Demandes soumises au delai et proposition de blocker.conf
+# ---------------------------------------------------------------------------
+blocker_adopter_etat
+if [ -x /usr/sbin/blocker-delai ]; then
+    /usr/sbin/blocker-delai --traiter || \
+        blocker_warn "$(m "traitement des demandes en echec" "processing the requests failed")"
+fi
+
 # L'abstention sur /etc/hosts ne doit pas etre silencieuse : c'est le
 # contournement le plus simple de tout l'outil, l'utilisateur doit savoir si ce
 # trou est ouvert ou ferme sur sa machine.
@@ -64,15 +83,23 @@ fi
 # 2. Fichiers de configuration manquants ou modifies
 # ---------------------------------------------------------------------------
 verifier_fichier() {
-    local modele="$1" cible="$2" mode="${3:-0644}"
+    local modele="$1" cible="$2" mode="${3:-0644}" genre="${4:-}"
     [ -r "${modele}" ] || return 0
-    if [ ! -e "${cible}" ]; then
-        note "$(m "fichier absent, reinstalle" "file missing, reinstalled") : ${cible}"
-        blocker_install_protected "${modele}" "${cible}" "${mode}"
+    # Les regles auditd ne sont posees que si auditd est installe.
+    if [ "${genre}" = "audit" ] && [ ! -d "$(dirname "${cible}")" ]; then
         return 0
     fi
-    if ! cmp -s "${modele}" "${cible}"; then
+    if [ ! -e "${cible}" ]; then
+        note "$(m "fichier absent, reinstalle" "file missing, reinstalled") : ${cible}"
+    elif ! cmp -s "${modele}" "${cible}"; then
         note "$(m "fichier modifie, restaure depuis le modele" "file modified, restored from template") : ${cible}"
+    else
+        return 0
+    fi
+    if [ "${genre}" = "audit" ]; then
+        install -m "${mode}" "${modele}" "${cible}"
+        command -v augenrules >/dev/null 2>&1 && augenrules --load >/dev/null 2>&1
+    else
         blocker_install_protected "${modele}" "${cible}" "${mode}"
     fi
 }
@@ -110,11 +137,131 @@ if [ "${policies_apres}" -gt "${policies_avant}" ]; then
     note "$(m "policies navigateur redeployees" "browser policies redeployed") (${policies_avant} -> ${policies_apres})"
 fi
 
+if [ -d /etc/audit/rules.d ] && [ -r "${BLOCKER_SHAREDIR}/conf/audit-blocker-adulte.rules" ]; then
+    regles_audit="$(mktemp)"
+    blocker_regles_audit > "${regles_audit}"
+    verifier_fichier "${regles_audit}" "/etc/audit/rules.d/blocker-adulte.rules" 0640 audit
+    rm -f "${regles_audit}"
+fi
+
+# ---------------------------------------------------------------------------
+# 2 bis. Fichiers d'etat : listes, adresses, configuration en vigueur
+# ---------------------------------------------------------------------------
+# Chaque fichier gere a une copie de reserve, ecrite en meme temps que lui par
+# blocker_publier. Une difference est une modification faite a la main ; un
+# fichier sans reserve dans le repertoire des listes est un fichier inconnu.
+# Le self-heal ne restaurait auparavant les listes livrees que si elles etaient
+# VIDES ; les listes telechargees et les fichiers en trop n'etaient pas
+# surveilles du tout.
+
+# Lignes ajoutees seulement, et seulement des blocages valides : on accepte.
+ajouts_seulement() {
+    local actuel="$1" reserve="$2" retirees ajoutees
+    retirees="$(comm -23 <(LC_ALL=C sort -u "${reserve}") <(LC_ALL=C sort -u "${actuel}") | grep -c . || true)"
+    [ "${retirees}" -eq 0 ] || return 1
+    ajoutees="$(comm -13 <(LC_ALL=C sort -u "${reserve}") <(LC_ALL=C sort -u "${actuel}"))"
+    [ -n "${ajoutees}" ] || return 1
+    printf '%s\n' "${ajoutees}" | while IFS= read -r l; do
+        case "${l}" in
+            address=/*/\#) blocker_domaine_valide "$(printf '%s' "${l}" | sed 's|^address=/||; s|/#$||')" || exit 1 ;;
+            *) exit 1 ;;
+        esac
+    done
+}
+
+restaurer_depuis_reserve() {
+    local actuel="$1" reserve="$2" dir
+    dir="$(dirname "${actuel}")"
+    blocker_unlock_dir "${dir}"
+    blocker_unlock_file "${actuel}"
+    install -D -m 0644 "${reserve}" "${actuel}"
+    blocker_lock_file "${actuel}" silencieux
+    [ "${dir}" = "${BLOCKER_LISTDIR}" ] && blocker_lock_dir "${dir}"
+    return 0
+}
+
+if [ -d "${BLOCKER_RESERVEDIR}" ]; then
+    etat_modifie=0
+    while IFS= read -r reserve; do
+        actuel="${BLOCKER_STATEDIR}/${reserve#"${BLOCKER_RESERVEDIR}"/}"
+        if [ ! -e "${actuel}" ]; then
+            note "$(m "fichier d'etat supprime, restaure" "state file deleted, restored") : ${actuel}"
+            restaurer_depuis_reserve "${actuel}" "${reserve}"
+            etat_modifie=1
+        elif ! cmp -s "${actuel}" "${reserve}"; then
+            case "${actuel}" in
+                "${BLOCKER_LISTDIR}"/*.conf)
+                    if ajouts_seulement "${actuel}" "${reserve}"; then
+                        blocker_publier "${actuel}" "${actuel}"
+                        blocker_info "$(m "blocages ajoutes a la main, acceptes" "blocks added by hand, accepted") : ${actuel}"
+                        etat_modifie=1
+                        continue
+                    fi ;;
+            esac
+            n_ret="$(comm -23 <(LC_ALL=C sort -u "${reserve}") <(LC_ALL=C sort -u "${actuel}") | grep -c . || true)"
+            note "$(m "fichier d'etat modifie a la main, restaure" "state file modified by hand, restored") : ${actuel} (${n_ret} $(m "ligne(s) retiree(s) ou changee(s)" "line(s) removed or changed"))"
+            restaurer_depuis_reserve "${actuel}" "${reserve}"
+            etat_modifie=1
+        else
+            blocker_lock_file "${actuel}"
+            blocker_lock_file "${reserve}" silencieux
+        fi
+    done < <(find "${BLOCKER_RESERVEDIR}" -type f 2>/dev/null)
+
+    # Fichiers inconnus dans le repertoire des listes : tout fichier « .conf »
+    # y est lu par le resolveur, une ligne « server= » suffirait a y detourner
+    # un domaine. Mis en quarantaine, jamais detruits.
+    for f in "${BLOCKER_LISTDIR}"/*; do
+        [ -f "${f}" ] || continue
+        nom="$(basename "${f}")"
+        [ -e "${BLOCKER_RESERVEDIR}/blocklists/${nom}" ] && continue
+        install -d -m 0700 "${BLOCKER_QUARANTAINE}"
+        blocker_unlock_dir "${BLOCKER_LISTDIR}"
+        blocker_unlock_file "${f}"
+        mv -f "${f}" "${BLOCKER_QUARANTAINE}/$(date +%Y%m%d-%H%M%S)-${nom}"
+        blocker_lock_dir "${BLOCKER_LISTDIR}"
+        note "$(m "fichier inconnu dans" "unknown file in") ${BLOCKER_LISTDIR}, $(m "mis en quarantaine" "quarantined") : ${nom} -> ${BLOCKER_QUARANTAINE}"
+        etat_modifie=1
+    done
+    blocker_lock_dir "${BLOCKER_LISTDIR}"
+
+    # La liste de base livree avec le paquet fait foi telle quelle.
+    if ! cmp -s "${BLOCKER_SHAREDIR}/blocklists/00-base.conf" "${BLOCKER_LISTDIR}/00-base.conf"; then
+        note "$(m "liste de base differente du modele livre, restauree" "base list differs from the shipped template, restored")"
+        blocker_publier "${BLOCKER_SHAREDIR}/blocklists/00-base.conf" "${BLOCKER_LISTDIR}/00-base.conf"
+        etat_modifie=1
+    fi
+
+    # Journal des demandes : en ajout seul.
+    if [ -e "${BLOCKER_DELAIDIR}/historique" ] && command -v lsattr >/dev/null 2>&1; then
+        attrs="$(lsattr -d "${BLOCKER_DELAIDIR}/historique" 2>/dev/null)"; attrs="${attrs%% *}"
+        case "${attrs}" in
+            *a*) ;;
+            *) chattr +a "${BLOCKER_DELAIDIR}/historique" 2>/dev/null && \
+                   note "$(m "journal des demandes : attribut d'ajout seul reapplique" "request log: append-only attribute re-applied")" ;;
+        esac
+    fi
+
+    if [ "${etat_modifie}" -eq 1 ]; then
+        /usr/lib/blocker-adulte/blocker-apply-nftables >/dev/null 2>&1 || true
+        blocker_recharger_resolveur
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 2 ter. Categories livrees (moteurs sans filtre, interfaces alternatives)
+# ---------------------------------------------------------------------------
+/usr/lib/blocker-adulte/blocker-categories >/dev/null 2>&1
+if [ "$?" -eq 3 ]; then
+    note "$(m "categories regenerees" "categories regenerated")"
+    blocker_recharger_resolveur
+fi
+
 # ---------------------------------------------------------------------------
 # 3 ter. Resolveurs amont conformes a blocker.conf
 # ---------------------------------------------------------------------------
 # Sans amont, dnsmasq ne resout plus rien : la machine parait privee de reseau.
-UP="${BLOCKER_STATEDIR}/blocklists/01-upstream.conf"
+UP="${BLOCKER_LISTDIR}/01-upstream.conf"
 if [ ! -s "${UP}" ]; then
     note "$(m "fichier d amont absent, regeneration" "upstream file missing, regenerating")"
     /usr/lib/blocker-adulte/blocker-upstream >/dev/null 2>&1 && \
@@ -140,7 +287,7 @@ fi
 # desinstaller. On verifie donc la derive plus souvent que la mise a jour des
 # listes — mais pas a chaque passe : une requete DNS toutes les 5 minutes pour
 # rien serait du gaspillage. On ne sonde que si le fichier a plus de 6 heures.
-SS="${BLOCKER_STATEDIR}/blocklists/05-safesearch.conf"
+SS="${BLOCKER_LISTDIR}/05-safesearch.conf"
 
 safesearch_actif() {
     case "${BLOCKER_SAFESEARCH:-oui}" in
@@ -184,10 +331,21 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Regles nftables actives vs attendues
 # ---------------------------------------------------------------------------
+# Comparaison complete a une reference chargee dans un espace reseau jetable :
+# voir blocker-apply-nftables.
 if ! /usr/lib/blocker-adulte/blocker-apply-nftables --check >/dev/null 2>&1; then
-    note "$(m "regles nftables non conformes, rechargement" "nftables rules non-compliant, reloading")"
+    note "$(m "regles nftables non conformes a la reference, rechargement" "nftables rules differ from the reference, reloading")"
     /usr/lib/blocker-adulte/blocker-apply-nftables --force >/dev/null 2>&1 || \
         blocker_err "$(m "rechargement nftables en echec" "reloading nftables failed")"
+fi
+
+# Regles NAT d'autres tables sur le port 53 : jamais touchees, toujours
+# signalees. Une telle regle peut detourner le DNS a cote de la redirection.
+etrangeres="$(/usr/lib/blocker-adulte/blocker-apply-nftables --etrangeres 2>/dev/null)"
+if [ -n "${etrangeres}" ]; then
+    blocker_warn "$(m "regle(s) NAT sur le port 53 hors de blocker-adulte — a verifier :" \
+                      "NAT rule(s) on port 53 outside blocker-adulte — to check:")"
+    printf '%s\n' "${etrangeres}" | head -10 | sed 's/^/  /' >&2
 fi
 
 # Ligne d'inclusion dans le fichier charge par nftables.service (persistance au

@@ -17,6 +17,10 @@
 #
 # L'amont compte : c'est la seconde barriere, independante des listes locales.
 # Un amont filtrant bloque des domaines que nos listes n'ont pas encore vus.
+#
+# Ce script ecrit aussi ${BLOCKER_NFTDIR}/amonts.nft : les regles nftables
+# n'exemptent le resolveur que vers ses amonts, sur le port 53. Un amont absent
+# du jeu ecrit en dur dans les regles y est ajoute par ce fichier.
 
 set -uo pipefail
 
@@ -24,10 +28,8 @@ set -uo pipefail
 
 blocker_require_root
 
-DEST="${BLOCKER_STATEDIR}/blocklists"
-SORTIE="${DEST}/01-upstream.conf"
-
-install -d -m 0755 "${DEST}"
+SORTIE="${BLOCKER_LISTDIR}/01-upstream.conf"
+SORTIE_NFT="${BLOCKER_NFTDIR}/amonts.nft"
 
 # Une adresse invalide empecherait dnsmasq de demarrer : la machine se
 # retrouverait sans DNS du tout, ce qui pousse a tout desinstaller.
@@ -59,7 +61,27 @@ if [ "${#amonts[@]}" -eq 0 ]; then
 fi
 
 WORK="$(mktemp)"
-trap 'rm -f "${WORK}"' EXIT
+WORK_NFT="$(mktemp)"
+trap 'rm -f "${WORK}" "${WORK_NFT}"' EXIT
+
+# Jeu d'adresses nftables : un « add element » par famille. Les amonts deja
+# presents en dur dans les regles y figurent aussi ; « auto-merge » absorbe les
+# doublons.
+v4=""; v6=""
+for a in "${amonts[@]}"; do
+    case "${a}" in
+        *:*) v6="${v6:+${v6}, }${a}" ;;
+        *)   v4="${v4:+${v4}, }${a}" ;;
+    esac
+done
+{
+    printf '# blocker-adulte — amonts exemptes de la redirection DNS (genere)\n'
+    printf '# Genere par /usr/lib/blocker-adulte/blocker-upstream a partir de %s\n' "${BLOCKER_CONF_EN_VIGUEUR}"
+    [ -n "${v4}" ] && printf 'add element ip blocker_adulte_nat amonts { %s }\n' "${v4}"
+    [ -n "${v6}" ] && printf 'add element ip6 blocker_adulte_nat amonts6 { %s }\n' "${v6}"
+} > "${WORK_NFT}"
+blocker_publier "${WORK_NFT}" "${SORTIE_NFT}" || \
+    blocker_err "$(m "ecriture du jeu d'amonts nftables impossible" "cannot write the nftables upstream set")"
 
 {
     printf '# blocker-adulte — resolveurs amont (genere automatiquement)\n'
@@ -88,9 +110,13 @@ fi
 
 if [ -e "${SORTIE}" ] && \
    cmp -s <(grep '^server=' "${WORK}") <(grep '^server=' "${SORTIE}" 2>/dev/null); then
-    exit 0    # inchange : on evite de reecrire et de faire croire a un ecart
+    # Inchange : on evite de reecrire et de faire croire a un ecart, mais on
+    # s'assure que la reserve existe (premiere passe apres une mise a jour).
+    [ -e "${BLOCKER_RESERVEDIR}/blocklists/01-upstream.conf" ] || \
+        blocker_publier "${SORTIE}" "${SORTIE}"
+    exit 0
 fi
 
-install -m 0644 "${WORK}" "${SORTIE}"
+blocker_publier "${WORK}" "${SORTIE}" || exit 1
 blocker_repair "$(m "resolveurs amont mis a jour" "upstream resolvers updated") : ${amonts[*]}"
 exit 0

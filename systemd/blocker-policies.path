@@ -18,10 +18,17 @@ Documentation=file:/usr/share/doc/blocker-adulte/README.md
 
 [Path]
 PathChanged=/etc/firefox/policies
+PathChanged=/etc/firefox-esr/policies
+PathChanged=/etc/librewolf/policies
+PathChanged=/etc/waterfox/policies
+PathChanged=/etc/floorp/policies
 PathChanged=/etc/chromium/policies/managed
+PathChanged=/etc/chromium-browser/policies/managed
 PathChanged=/etc/opt/chrome/policies/managed
 PathChanged=/etc/opt/chromium/policies/managed
 PathChanged=/etc/brave/policies/managed
+PathChanged=/etc/opt/edge/policies/managed
+PathChanged=/etc/vivaldi/policies/managed
 Unit=blocker-policies.service
 
 [Install]

@@ -18,6 +18,9 @@
 #   blocker-status --court      une ligne de resume
 #   blocker-status --sonde      teste en direct quelques domaines
 #   blocker-status --trous      uniquement ce qui ne protege pas
+#
+# Lance en root, il en verifie davantage : regles nftables completes, mot de
+# passe du chargeur de demarrage, filtre amont (--sonde).
 
 set -uo pipefail
 
@@ -33,10 +36,10 @@ fi
 
 MODE="complet"
 case "${1:-}" in
-    --court)  MODE="court" ;;
-    --sonde)  MODE="sonde" ;;
-    --trous)  MODE="trous" ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --court|--short)  MODE="court" ;;
+    --sonde|--probe)  MODE="sonde" ;;
+    --trous|--gaps)   MODE="trous" ;;
+    -h|--help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     "") ;;
     *) echo "$(m "Argument inconnu" "Unknown argument") : $1" >&2; exit 2 ;;
 esac
@@ -104,9 +107,125 @@ sonde_safesearch() {
     local obtenu attendu
     obtenu="$(dig +short +time=2 +tries=1 "@${BLOCKER_LISTEN_ADDR}" "$1" 2>/dev/null \
               | grep -E '^[0-9.]+$' | sort | head -1)"
-    attendu="$(grep "^address=/$1/" "${BLOCKER_STATEDIR}/blocklists/05-safesearch.conf" 2>/dev/null \
+    attendu="$(grep "^address=/$1/" "${BLOCKER_LISTDIR}/05-safesearch.conf" 2>/dev/null \
                | sed 's|.*/||' | grep -E '^[0-9.]+$' | sort | head -1)"
     [ -n "${obtenu}" ] && [ -n "${attendu}" ] && [ "${obtenu}" = "${attendu}" ]
+}
+
+# Quelques domaines tires au hasard dans la liste adulte telechargee. Ils ne
+# sont JAMAIS affiches : seul le compte des resultats l'est. Un outil comme
+# celui-ci n'a pas a mettre des adresses sous les yeux de la personne qu'il
+# protege. La liste adulte est celle dont l'URL source nomme ce contenu ; a
+# defaut, toutes les listes telechargees.
+echantillon_adulte() {
+    local n="$1" f fichiers=""
+    for f in "${BLOCKER_LISTDIR}"/10-liste-*.conf; do
+        [ -r "${f}" ] || continue
+        grep -qiE '^# Source : .*(porn|adult|nsfw)' "${f}" && fichiers="${fichiers} ${f}"
+    done
+    [ -n "${fichiers}" ] || fichiers="$(ls "${BLOCKER_LISTDIR}"/10-liste-*.conf 2>/dev/null)"
+    [ -n "${fichiers}" ] || return 0
+    # shellcheck disable=SC2086
+    sed -n 's|^address=/\([^/]*\)/#$|\1|p' ${fichiers} 2>/dev/null | shuf -n "${n}" 2>/dev/null
+}
+
+# Le filtre amont filtre-t-il vraiment ? Il est interroge en clair sur le port
+# 53 : un reseau qui detourne le DNS peut lui substituer un resolveur
+# quelconque sans que rien ne le montre. On lui demande directement, sous
+# l'identite du resolveur, des domaines de la liste adulte.
+#   0 filtre   1 ne filtre pas (amont change ou DNS detourne)   2 ne repond pas
+#   3 non concluant   4 non verifiable (root, dig ou liste manquants)
+sonde_amont() {
+    local d r bloques=0 reels=0 total=0
+    [ "$(id -u)" -eq 0 ] || return 4
+    command -v dig >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1 || return 4
+    getent passwd "${BLOCKER_USER}" >/dev/null 2>&1 || return 4
+    r="$(runuser -u "${BLOCKER_USER}" -- dig +short +time=3 +tries=2 "@${BLOCKER_UPSTREAM_1}" example.com 2>/dev/null \
+         | grep -E '^[0-9.]+$' | head -1)"
+    [ -n "${r}" ] || return 2
+    while IFS= read -r d; do
+        [ -n "${d}" ] || continue
+        total=$((total + 1))
+        r="$(runuser -u "${BLOCKER_USER}" -- dig +short +time=3 +tries=1 "@${BLOCKER_UPSTREAM_1}" "${d}" 2>/dev/null \
+             | grep -E '^[0-9.]+$' | head -1)"
+        case "${r}" in
+            "") ;;   # NXDOMAIN ou rien : un domaine mort ne dit rien
+            0.0.0.0|127.*|146.112.61.10[4-9]|146.112.61.110|94.140.14.3[3-5]) bloques=$((bloques + 1)) ;;
+            *) reels=$((reels + 1)) ;;
+        esac
+    done < <(echantillon_adulte 12)
+    [ "${total}" -gt 0 ] || return 4
+    SONDE_AMONT_DETAIL="${bloques}/${total}"
+    if [ "${bloques}" -gt 0 ] && [ "${reels}" -le "${bloques}" ]; then return 0; fi
+    if [ "${reels}" -ge 3 ] && [ "${reels}" -ge $((total / 2)) ]; then return 1; fi
+    return 3
+}
+
+# Navigateurs installes hors des repertoires de policies : flatpak, snaps qui
+# ne lisent pas /etc, programmes extraits dans un dossier personnel. Ils ne
+# recoivent aucune policy (DoH, navigation privee, extensions...). Le blocage
+# reseau s'applique a eux, pas les restrictions applicatives.
+navigateurs_hors_policies() {
+    local base id s
+    for base in /var/lib/flatpak/app /home/*/.local/share/flatpak/app /root/.local/share/flatpak/app; do
+        [ -d "${base}" ] || continue
+        for id in org.mozilla.firefox io.gitlab.librewolf-community net.waterfox.waterfox \
+                  one.ablaze.floorp app.zen_browser.zen net.mullvad.MullvadBrowser \
+                  com.google.Chrome org.chromium.Chromium com.github.Eloston.UngoogledChromium \
+                  io.github.ungoogled_software.ungoogled_chromium com.brave.Browser \
+                  com.microsoft.Edge com.vivaldi.Vivaldi com.opera.Opera \
+                  org.torproject.torbrowser-launcher com.github.micahflee.torbrowser-launcher \
+                  org.gnome.Epiphany org.qutebrowser.qutebrowser org.kde.falkon; do
+            [ -d "${base}/${id}" ] && printf 'flatpak : %s (%s)\n' "${id}" "${base}"
+        done
+    done
+    for s in brave opera vivaldi librewolf waterfox floorp zen-browser microsoft-edge; do
+        [ -d "/snap/${s}" ] && printf 'snap : %s\n' "${s}"
+    done
+    for s in opera opera-stable ungoogled-chromium thorium-browser zen-browser mullvad-browser; do
+        command -v "${s}" >/dev/null 2>&1 && printf '%s : %s\n' "$(m "non couvert" "not covered")" "$(command -v "${s}")"
+    done
+    find /home /root -xdev -maxdepth 6 \( -path '*/.cache' -o -path '*/snap' -o -path '*/.local/share/flatpak' \
+         -o -path '*/.var' -o -path '*/.git' \) -prune -o -type f -perm -u+x \
+         \( -name firefox -o -name firefox-bin -o -name chrome -o -name brave -o -name librewolf \
+            -o -name waterfox -o -name floorp -o -name vivaldi-bin -o -name msedge -o -name opera \
+            -o -name start-tor-browser -o -name mullvadbrowser -o -name zen \
+            -o -iname '*firefox*.appimage' -o -iname '*chrom*.appimage' -o -iname '*brave*.appimage' \
+            -o -iname '*librewolf*.appimage' -o -iname '*floorp*.appimage' -o -iname '*zen*.appimage' \
+            -o -iname '*vivaldi*.appimage' -o -iname '*opera*.appimage' -o -iname '*tor*browser*' \) \
+         -print 2>/dev/null | head -10 | sed "s|^|$(m "dossier personnel" "home folder") : |"
+}
+
+# Comptes humains (UID >= 1000) disposant des droits administrateur.
+comptes_admin() {
+    local g membres u uid
+    for g in sudo wheel admin; do
+        membres="$(getent group "${g}" 2>/dev/null | cut -d: -f4)"
+        for u in $(printf '%s' "${membres}" | tr ',' ' '); do
+            uid="$(getent passwd "${u}" 2>/dev/null | cut -d: -f3)"
+            [ -n "${uid}" ] && [ "${uid}" -ge 1000 ] && [ "${uid}" -lt 65534 ] && printf '%s\n' "${u}"
+        done
+    done | sort -u
+}
+
+# Le chargeur de demarrage est-il protege ? Lecture seule : l'outil ne touche
+# jamais au bootloader. Le mode recovery d'Ubuntu ouvre un shell root sans mot
+# de passe : sans mot de passe GRUB (et BIOS), le delai et le compte sans droits
+# ne tiennent pas.
+#   0 protege   1 non protege   2 illisible (root requis)   3 GRUB absent
+etat_grub() {
+    local f trouve=0
+    for f in /boot/grub/grub.cfg /boot/grub2/grub.cfg /boot/efi/EFI/*/grub.cfg; do
+        [ -e "${f}" ] || continue
+        trouve=1
+        [ -r "${f}" ] || return 2
+        if grep -qE '^[[:space:]]*set[[:space:]]+superusers=' "${f}" && \
+           grep -qE '^[[:space:]]*password(_pbkdf2)?[[:space:]]' "${f}"; then
+            return 0
+        fi
+    done
+    [ "${trouve}" -eq 1 ] && return 1
+    return 3
 }
 
 # ---------------------------------------------------------------------------
@@ -141,6 +260,57 @@ if [ "${MODE}" = "sonde" ]; then
     done
 
     printf '\n  %s%s%s\n' "${GRAS}" \
+        "$(m "Liste adulte (domaines tires au hasard, non affiches)" \
+             "Adult list (random domains, not shown)")" "${Z}"
+    n_ok=0; n_ko=0; n_sans=0; n_tot=0
+    while IFS= read -r d; do
+        [ -n "${d}" ] || continue
+        n_tot=$((n_tot + 1))
+        sonde_bloque "${d}"
+        case "$?" in
+            0) n_ok=$((n_ok + 1)) ;;
+            3) n_sans=$((n_sans + 1)) ;;
+            *) n_ko=$((n_ko + 1)) ;;
+        esac
+    done < <(echantillon_adulte 5)
+    if [ "${n_tot}" -eq 0 ]; then
+        moyen "$(m "liste adulte" "adult list")" "$(m "absente : sudo systemctl start blocker-list-update" "missing: sudo systemctl start blocker-list-update")"
+    elif [ "${n_ko}" -gt 0 ]; then
+        ko "$(m "liste adulte" "adult list")" "${n_ko}/${n_tot} $(m "RESOLVENT" "RESOLVE")"
+    elif [ "${n_sans}" -gt 0 ]; then
+        moyen "$(m "liste adulte" "adult list")" "${n_ok}/${n_tot} $(m "bloques, le reste sans reponse" "blocked, the rest unanswered")"
+    else
+        ok "$(m "liste adulte" "adult list")" "${n_ok}/${n_tot} $(m "bloques" "blocked")"
+    fi
+
+    printf '\n  %s%s%s\n' "${GRAS}" \
+        "$(m "Filtre amont (interroge directement, en clair sur le port 53)" \
+             "Upstream filter (queried directly, plaintext on port 53)")" "${Z}"
+    SONDE_AMONT_DETAIL=""
+    sonde_amont
+    case "$?" in
+        0) ok "${BLOCKER_UPSTREAM_1}" "$(m "filtre" "filtering") (${SONDE_AMONT_DETAIL} $(m "bloques" "blocked"))" ;;
+        1) ko "${BLOCKER_UPSTREAM_1}" "$(m "NE FILTRE PAS : amont change, ou DNS detourne par le reseau" \
+                                            "NOT FILTERING: upstream changed, or DNS hijacked by the network")" ;;
+        2) ko "${BLOCKER_UPSTREAM_1}" "$(m "ne repond pas" "does not answer")" ;;
+        3) moyen "${BLOCKER_UPSTREAM_1}" "$(m "non concluant" "inconclusive") (${SONDE_AMONT_DETAIL})" ;;
+        *) moyen "${BLOCKER_UPSTREAM_1}" "$(m "non verifiable (root et liste adulte requis)" "cannot check (root and adult list required)")" ;;
+    esac
+
+    printf '\n  %s%s%s\n' "${GRAS}" \
+        "$(m "Categories (doivent etre bloquees)" "Categories (must be blocked)")" "${Z}"
+    for cat in ${BLOCKER_CATEGORIES:-}; do
+        d="$(sed -n 's|^address=/\([^/]*\)/#$|\1|p' "${BLOCKER_LISTDIR}/30-categorie-${cat}.conf" 2>/dev/null | head -1)"
+        [ -n "${d}" ] || { ko "${cat}" "$(m "liste absente" "list missing")"; continue; }
+        sonde_bloque "${d}"
+        case "$?" in
+            0) ok "${cat}" "${d} $(m "bloque" "blocked")" ;;
+            3) moyen "${cat}" "${d} $(m "sans reponse" "no answer")" ;;
+            *) ko "${cat}" "${d} $(m "RESOUT" "RESOLVES")" ;;
+        esac
+    done
+
+    printf '\n  %s%s%s\n' "${GRAS}" \
         "$(m "Services legitimes (ne doivent PAS etre casses)" \
              "Legitimate services (must NOT be broken)")" "${Z}"
     for d in mail.google.com wikipedia.org github.com; do
@@ -154,7 +324,8 @@ if [ "${MODE}" = "sonde" ]; then
     done
 
     printf '\n'
-    exit 0
+    [ "${inactifs}" -eq 0 ] && exit 0
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -186,9 +357,9 @@ if service_tourne blocker-resolver.service dnsmasq; then
                      "The resolver is running but blocks nothing: lists empty or not loaded.")"
             ;;
     esac
-    nb=$(cat "${BLOCKER_STATEDIR}"/blocklists/*.conf 2>/dev/null | grep -c '^address=/' || true)
+    nb=$(cat "${BLOCKER_LISTDIR}"/*.conf 2>/dev/null | grep -c '^address=/' || true)
     detail "${nb} $(m "domaines dans les listes" "domains in the lists")"
-    recent="$(find "${BLOCKER_STATEDIR}/blocklists" -name '[1-9][0-9]-*.conf' -mtime -8 2>/dev/null | head -1)"
+    recent="$(find "${BLOCKER_LISTDIR}" -name '10-liste-*.conf' -mtime -8 2>/dev/null | head -1)"
     if [ -z "${recent}" ]; then
         detail "$(m "listes telechargees jamais mises a jour depuis plus de 8 jours" \
                    "downloaded lists not refreshed for more than 8 days")"
@@ -203,17 +374,26 @@ fi
 
 # --- 2. Application reseau --------------------------------------------------
 C2="$(m "2. Redirection DNS (nftables)" "2. DNS redirection (nftables)")"
-if command -v nft >/dev/null 2>&1 && \
+if [ "$(id -u)" -ne 0 ]; then
+    # Lire les regles du noyau demande CAP_NET_ADMIN : sans root, on ne peut
+    # rien affirmer, et « absente » serait faux.
+    moyen "${C2}" "$(m "non verifiable sans root (sudo blocker-status)" "cannot check without root (sudo blocker-status)")"
+elif command -v nft >/dev/null 2>&1 && \
    nft list table ip blocker_adulte_nat >/dev/null 2>&1; then
-    regles="$(nft list table ip blocker_adulte_nat 2>/dev/null)"
-    case "${regles}" in
-        *"dport 53"*) ok "${C2}" "$(m "active" "active")" ;;
-        *) moyen "${C2}" "$(m "table vide" "empty table")" ;;
-    esac
-    case "${regles}" in
-        *5353*) detail "$(m "ports alternatifs couverts" "alternate ports covered") (1053, 5053, 5300, 5335, 5353, 5453, 8053, 15353)" ;;
-        *) detail "$(m "seul le port 53 est couvert" "only port 53 is covered")" ;;
-    esac
+    if /usr/lib/blocker-adulte/blocker-apply-nftables --check >/dev/null 2>&1; then
+        ok "${C2}" "$(m "active, conforme a la reference" "active, matches the reference")"
+    else
+        moyen "${C2}" "$(m "active mais differente de la reference" "active but differs from the reference")"
+        trou "$(m "Regles nftables modifiees : le self-heal les rechargera sous 5 minutes." \
+                 "nftables rules modified: self-heal will reload them within 5 minutes.")"
+    fi
+    etrangeres="$(/usr/lib/blocker-adulte/blocker-apply-nftables --etrangeres 2>/dev/null)"
+    if [ -n "${etrangeres}" ]; then
+        detail "$(m "regles NAT d'autres tables sur le port 53 :" "NAT rules from other tables on port 53:")"
+        printf '%s\n' "${etrangeres}" | head -5 | while IFS= read -r l; do detail "  ${l}"; done
+        trou "$(m "Une regle NAT etrangere vise le port 53 : elle peut detourner le DNS. A verifier." \
+                 "A foreign NAT rule targets port 53: it may divert DNS. To check.")"
+    fi
 else
     ko "${C2}" "$(m "ABSENTE" "MISSING")"
     trou "$(m "Regles nftables absentes : le DNS peut sortir vers n'importe quel serveur." \
@@ -226,6 +406,8 @@ if [ "${BLOCKER_BLOCK_TUNNELS:-oui}" = "non" ]; then
     moyen "${C2B}" "$(m "desactive par configuration" "disabled by configuration")"
     trou "$(m "Tor et les VPN par defaut ne sont pas bloques (BLOCKER_BLOCK_TUNNELS=non)." \
              "Tor and default VPNs are not blocked (BLOCKER_BLOCK_TUNNELS=non).")"
+elif [ "$(id -u)" -ne 0 ]; then
+    moyen "${C2B}" "$(m "non verifiable sans root" "cannot check without root")"
 elif nft list table inet blocker_adulte_tunnels >/dev/null 2>&1; then
     ok "${C2B}" "$(m "actif" "active")"
     detail "$(m "autorites d annuaire Tor, WireGuard, OpenVPN, IPsec, L2TP, PPTP, proxys" \
@@ -246,15 +428,25 @@ while IFS='|' read -r dir fichier _f; do
     [ -s "${dir}/${fichier}" ] && nb_pol=$((nb_pol + 1))
 done < <(blocker_browser_targets)
 
-if [ "${nb_attendu}" -eq 0 ]; then
+hors_policies="$(navigateurs_hors_policies)"
+if [ "${nb_attendu}" -eq 0 ] && [ -z "${hors_policies}" ]; then
     moyen "${C3}" "$(m "aucun navigateur detecte" "no browser detected")"
-elif [ "${nb_pol}" -eq "${nb_attendu}" ]; then
+elif [ "${nb_pol}" -eq "${nb_attendu}" ] && [ -z "${hors_policies}" ]; then
     ok "${C3}" "${nb_pol}/${nb_attendu} $(m "en place" "in place")"
 else
     moyen "${C3}" "${nb_pol}/${nb_attendu} $(m "en place" "in place")"
-    trou "$(m "Policies navigateur incompletes : sudo /usr/lib/blocker-adulte/blocker-apply-policies" \
-             "Browser policies incomplete: sudo /usr/lib/blocker-adulte/blocker-apply-policies")"
+    [ "${nb_pol}" -eq "${nb_attendu}" ] || \
+        trou "$(m "Policies navigateur incompletes : sudo /usr/lib/blocker-adulte/blocker-apply-policies" \
+                 "Browser policies incomplete: sudo /usr/lib/blocker-adulte/blocker-apply-policies")"
 fi
+if [ -n "${hors_policies}" ]; then
+    detail "$(m "navigateurs hors des repertoires de policies :" "browsers outside the policy directories:")"
+    printf '%s\n' "${hors_policies}" | while IFS= read -r l; do detail "  ${l}"; done
+    trou "$(m "Navigateur installe hors des repertoires de policies (flatpak, snap ou dossier personnel) : aucune restriction applicative ne s'y applique." \
+             "Browser installed outside the policy directories (flatpak, snap or home folder): no application restriction applies to it.")"
+fi
+detail "$(m "verifier dans chrome://policy ou about:policies que les policies sont lues" \
+           "check in chrome://policy or about:policies that the policies are read")"
 
 # --- 4. Hook initramfs ------------------------------------------------------
 # Trois generateurs possibles selon la distribution. On demande a blocker-os.sh
@@ -358,15 +550,24 @@ else
 fi
 
 # --- 7. Self-heal -----------------------------------------------------------
-C7="$(m "7. Timer de self-heal" "7. Self-heal timer")"
-if systemd_dispo && systemctl is-active --quiet blocker-selfheal.timer 2>/dev/null; then
-    ok "${C7}" "$(m "arme" "armed")"
-    prochaine="$(systemctl show blocker-selfheal.timer -p NextElapseUSecRealtime --value 2>/dev/null)"
-    [ -n "${prochaine}" ] && detail "$(m "prochaine passe" "next pass") : ${prochaine}"
-elif systemd_dispo; then
-    ko "${C7}" "$(m "DESARME" "DISARMED")"
-    trou "$(m "Le self-heal est desarme : plus de reparation periodique." \
-             "Self-heal is disarmed: no periodic repair.")"
+C7="$(m "7. Timers (self-heal, listes, rapport)" "7. Timers (self-heal, lists, report)")"
+if systemd_dispo; then
+    desarmes=""
+    for u in blocker-selfheal.timer blocker-list-update.timer blocker-rapport.timer blocker-policies.path; do
+        if ! systemctl is-active --quiet "${u}" 2>/dev/null || \
+           [ "$(systemctl is-enabled "${u}" 2>/dev/null)" != "enabled" ]; then
+            desarmes="${desarmes} ${u}"
+        fi
+    done
+    if [ -z "${desarmes}" ]; then
+        ok "${C7}" "$(m "armes" "armed")"
+        prochaine="$(systemctl show blocker-selfheal.timer -p NextElapseUSecRealtime --value 2>/dev/null)"
+        [ -n "${prochaine}" ] && detail "$(m "prochaine passe de self-heal" "next self-heal pass") : ${prochaine}"
+    else
+        ko "${C7}" "$(m "DESARME(S)" "DISARMED") :${desarmes}"
+        trou "$(m "Timer desarme sans demande arrivee a echeance : la garde le reactive sous 15 secondes." \
+                 "Timer disarmed without a request past its delay: the guard re-enables it within 15 seconds.")"
+    fi
 else
     moyen "${C7}" "$(m "systemd absent, non verifiable" "systemd absent, cannot verify")"
 fi
@@ -394,11 +595,92 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Ce qui tient face a quelqu'un qui connait tout : delai, autre personne,
+# quelqu'un qui lit les journaux
+# ---------------------------------------------------------------------------
+titre "$(m "Delai, personne de confiance, garde-fous" "Delay, trusted person, safeguards")"
+
+# --- Delai -------------------------------------------------------------------
+n_dem=0; n_desinst=0
+while IFS= read -r id; do
+    n_dem=$((n_dem + 1))
+    [ "$(blocker_demande_champ "${id}" type)" = "desinstallation" ] && n_desinst=$((n_desinst + 1))
+done < <(blocker_demandes_lister)
+if [ "${n_dem}" -eq 0 ]; then
+    ok "$(m "Delai" "Delay")" "${BLOCKER_DELAI_HEURES} h, $(m "aucune demande en cours" "no pending request")"
+else
+    moyen "$(m "Delai" "Delay")" "${BLOCKER_DELAI_HEURES} h, ${n_dem} $(m "demande(s) en cours : blocker-delai" "pending request(s): blocker-delai")"
+    [ "${n_desinst}" -gt 0 ] && trou "$(m "Une desinstallation est demandee : blocker-delai pour l'annuler." \
+                                         "An uninstall is requested: blocker-delai to cancel it.")"
+fi
+
+# --- Rapport -----------------------------------------------------------------
+C_RAP="$(m "Rapport a une personne de confiance" "Report to a trusted person")"
+if [ -z "${BLOCKER_RAPPORT_DESTINATAIRE:-}" ]; then
+    moyen "${C_RAP}" "$(m "aucun destinataire" "no recipient")"
+    trou "$(m "Personne ne lit les journaux : renseigner BLOCKER_RAPPORT_DESTINATAIRE (README, « Quelqu'un qui voit les journaux »)." \
+             "Nobody reads the logs: set BLOCKER_RAPPORT_DESTINATAIRE (README, « Someone who sees the logs »).")"
+else
+    dernier="$(cat "${BLOCKER_RAPPORTDIR}/dernier-envoi" 2>/dev/null || echo 0)"
+    case "${dernier}" in ''|*[!0-9]*) dernier=0 ;; esac
+    if [ "${dernier}" -eq 0 ]; then
+        moyen "${C_RAP}" "${BLOCKER_RAPPORT_DESTINATAIRE}, $(m "aucun rapport envoye pour l'instant" "no report sent yet")"
+    elif [ $(( $(date +%s) - dernier )) -gt $((9 * 86400)) ]; then
+        ko "${C_RAP}" "$(m "dernier envoi le" "last sent on") $(blocker_date "${dernier}")"
+        trou "$(m "Le rapport hebdomadaire ne part plus : sudo /usr/lib/blocker-adulte/blocker-rapport --test" \
+                 "The weekly report is no longer sent: sudo /usr/lib/blocker-adulte/blocker-rapport --test")"
+    else
+        ok "${C_RAP}" "${BLOCKER_RAPPORT_DESTINATAIRE}, $(m "dernier envoi le" "last sent on") $(blocker_date "${dernier}")"
+    fi
+fi
+
+# --- Comptes administrateurs -------------------------------------------------
+admins="$(comptes_admin | tr '\n' ' ' | sed 's/ $//')"
+C_ADM="$(m "Compte du quotidien sans droits" "Everyday account without rights")"
+if [ -z "${admins}" ]; then
+    ok "${C_ADM}" "$(m "aucun compte humain administrateur" "no human administrator account")"
+else
+    moyen "${C_ADM}" "$(m "administrateur(s)" "administrator(s)") : ${admins}"
+    trou "$(m "Un compte du quotidien administrateur peut tout defaire : utiliser un compte sans droits et confier le mot de passe administrateur a quelqu'un de confiance (README, « Une autre personne »)." \
+             "An everyday administrator account can undo everything: use an account without rights and give the administrator password to someone you trust (README, « Another person »).")"
+fi
+
+# --- Chargeur de demarrage ---------------------------------------------------
+C_BOOT="$(m "Mot de passe du chargeur de demarrage" "Boot loader password")"
+etat_grub
+case "$?" in
+    0) ok "${C_BOOT}" "$(m "GRUB protege par mot de passe" "GRUB password-protected")" ;;
+    1) moyen "${C_BOOT}" "$(m "GRUB sans mot de passe" "GRUB without password")"
+       trou "$(m "GRUB sans mot de passe : le mode recovery ouvre un shell root. Poser un mot de passe GRUB et BIOS (README, « Une autre personne »)." \
+                "GRUB without password: recovery mode opens a root shell. Set a GRUB and BIOS password (README, « Another person »).")" ;;
+    2) moyen "${C_BOOT}" "$(m "non verifiable sans root" "cannot check without root")" ;;
+    *)
+        if [ -e /boot/loader/loader.conf ] || [ -e /efi/loader/loader.conf ] || [ -e /boot/efi/loader/loader.conf ]; then
+            if grep -qsE '^[[:space:]]*editor[[:space:]]+(no|0|false)' /boot/loader/loader.conf /efi/loader/loader.conf /boot/efi/loader/loader.conf; then
+                ok "${C_BOOT}" "$(m "systemd-boot, edition de la ligne de commande desactivee" "systemd-boot, command-line editing disabled")"
+            else
+                moyen "${C_BOOT}" "$(m "systemd-boot, edition de la ligne de commande possible" "systemd-boot, command-line editing possible")"
+                trou "$(m "systemd-boot laisse modifier la ligne de commande du noyau au demarrage : « editor no » dans loader.conf, et un mot de passe BIOS." \
+                         "systemd-boot allows editing the kernel command line at boot: « editor no » in loader.conf, and a BIOS password.")"
+            fi
+        else
+            moyen "${C_BOOT}" "$(m "chargeur non reconnu" "boot loader not recognised")"
+        fi ;;
+esac
+detail "$(m "le mot de passe BIOS/UEFI ne se verifie pas depuis le systeme" \
+           "the BIOS/UEFI password cannot be checked from the system")"
+
+# --- Fichiers mis en quarantaine ---------------------------------------------
+if [ -d "${BLOCKER_QUARANTAINE}" ] && [ -n "$(ls -A "${BLOCKER_QUARANTAINE}" 2>/dev/null)" ]; then
+    detail "$(m "fichiers mis en quarantaine par le self-heal :" "files quarantined by self-heal:") $(ls "${BLOCKER_QUARANTAINE}" | wc -l) ($(printf '%s' "${BLOCKER_QUARANTAINE}"))"
+fi
+
+# ---------------------------------------------------------------------------
 # SafeSearch
 # ---------------------------------------------------------------------------
 if [ "${MODE}" != "trous" ]; then
     titre "$(m "SafeSearch force" "Enforced SafeSearch")"
-    FS="${BLOCKER_STATEDIR}/blocklists/05-safesearch.conf"
+    FS="${BLOCKER_LISTDIR}/05-safesearch.conf"
     if [ -s "${FS}" ]; then
         nb_ss=$(grep -c '^address=' "${FS}" 2>/dev/null || true)
         age=$(( ( $(date +%s) - $(stat -c %Y "${FS}" 2>/dev/null || echo 0) ) / 86400 ))
@@ -447,14 +729,14 @@ if [ "${MODE}" = "complet" ]; then
         # Le mot-cle suit la langue du journal, qui peut differer de celle de
         # l'affichage courant si BLOCKER_LANG a change : on cherche les deux.
         MOTCLE='REPARATION\|REPAIR'
-        n=$(journalctl -u blocker-guard -u blocker-selfheal --since '24 hours ago' \
+        n=$(journalctl -u blocker-guard -u blocker-selfheal -u blocker-resolver --since '24 hours ago' \
             --no-pager 2>/dev/null | grep -c "${MOTCLE}" || true)
         if [ "${n}" -eq 0 ]; then
             printf '  %s\n' "$(m "Aucune sur les dernieres 24 h." "None in the last 24 h.")"
         else
             printf '  %d %s\n' "${n}" \
                 "$(m "sur les dernieres 24 h. Les trois dernieres :" "in the last 24 h. Last three:")"
-            journalctl -u blocker-guard -u blocker-selfheal --since '24 hours ago' \
+            journalctl -u blocker-guard -u blocker-selfheal -u blocker-resolver --since '24 hours ago' \
                 --no-pager 2>/dev/null | grep "${MOTCLE}" | tail -3 \
                 | sed "s/^/     ${GRIS}/;s/$/${Z}/"
         fi
@@ -484,8 +766,7 @@ fi
 
 titre "$(m "Ce qui ne protege pas" "What does not protect you")"
 if [ "${#TROUS[@]}" -eq 0 ]; then
-    printf '  %s\n' "$(m "Rien a signaler : les huit composants sont operationnels." \
-                         "Nothing to report: all eight components are operational.")"
+    printf '  %s\n' "$(m "Rien a signaler." "Nothing to report.")"
 else
     for t in "${TROUS[@]}"; do
         printf '  %s!%s %s\n' "${JAUNE}" "${Z}" "${t}"
@@ -496,20 +777,14 @@ printf '\n  %s%s%s\n' "${GRIS}" \
     "$(m "Limites permanentes — elles ne disparaitront pas, par conception :" \
          "Permanent limits — by design, these will not go away:")" "${Z}"
 limite() { printf '  %s- %s%s\n' "${GRIS}" "$1" "${Z}"; }
-limite "$(m "un acces root suffit a tout retirer, en quatre phases documentees" \
-           "root access is enough to remove everything, in four documented phases")"
-limite "$(m "un live USB ou un autre systeme contourne tout" \
-           "a live USB or another operating system bypasses everything")"
-limite "$(m "l acces direct par adresse IP echappe a tout filtrage DNS" \
-           "direct access by IP address escapes any DNS filtering")"
-limite "$(m "un endpoint DoH prive sur une IP inconnue passerait" \
-           "a private DoH endpoint on an unknown IP would get through")"
-limite "$(m "un VPN delibere sur le port 443 est indiscernable d un HTTPS" \
-           "a deliberate VPN on port 443 is indistinguishable from HTTPS")"
-limite "$(m "Tor via des bridges obfs4 saisis a la main contourne le blocage" \
-           "Tor via obfs4 bridges entered by hand bypasses the block")"
-limite "$(m "un autre appareil (telephone, partage 4G) est hors de portee" \
-           "another device (phone, 4G hotspot) is out of reach")"
+limite "$(m "un acces root suffit a tout retirer : le delai et le compte sans droits le rendent lent et visible" \
+           "root access is enough to remove everything: the delay and an account without rights make it slow and visible")"
+limite "$(m "ce qui ne passe pas par cette machine lui echappe : un autre appareil, un autre systeme" \
+           "whatever does not go through this machine escapes it: another device, another system")"
+limite "$(m "le filtrage DNS ne voit que des noms, pas le contenu" \
+           "DNS filtering only sees names, not content")"
+limite "$(m "les blocages reseau ne couvrent que des adresses et des protocoles connus" \
+           "network blocks only cover known addresses and protocols")"
 
 printf '\n'
 if [ "${inactifs}" -eq 0 ] && [ "${degrades}" -eq 0 ]; then

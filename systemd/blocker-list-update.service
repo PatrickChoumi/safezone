@@ -10,7 +10,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/blocker-adulte/blocker-list-update
-TimeoutStartSec=600s
+TimeoutStartSec=1800s
 
 # Une mise a jour ratee (machine hors ligne) n'est pas une erreur : les listes
 # deja en place restent actives.

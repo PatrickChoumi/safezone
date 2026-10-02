@@ -71,10 +71,16 @@ dns_bloque() {
 
     if [ -n "${reponse}" ]; then
         printf '%s' "${reponse}"
-        case "${reponse}" in
-            "0.0.0.0"|"::"|"0.0.0.0 ::"|"127.0.0.1") return 0 ;;
-            *) return 1 ;;
-        esac
+        # Un domaine present dans deux listes recoit deux reponses nulles : on
+        # regarde chaque adresse, pas la ligne entiere.
+        local a
+        for a in ${reponse}; do
+            case "${a}" in
+                0.0.0.0|::|127.0.0.1) ;;
+                *) return 1 ;;
+            esac
+        done
+        return 0
     fi
 
     statut="$(dig +time=3 +tries=1 "@${serveur}" "${domaine}" 2>/dev/null \

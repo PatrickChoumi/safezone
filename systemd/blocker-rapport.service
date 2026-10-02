@@ -1,0 +1,15 @@
+[Unit]
+Description=blocker-adulte : rapport hebdomadaire a une personne de confiance
+Documentation=file:///usr/share/doc/blocker-adulte/README.md
+
+# Declenchee chaque jour par blocker-rapport.timer. Le script n'envoie que si le
+# dernier rapport a plus de sept jours : un envoi rate est retente le
+# lendemain, au lieu d'attendre la semaine suivante.
+After=network-online.target blocker-resolver.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/blocker-adulte/blocker-rapport
+TimeoutStartSec=300s
+SuccessExitStatus=0 1

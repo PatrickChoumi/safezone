@@ -21,6 +21,26 @@ table ip blocker_adulte_nat
 delete table ip blocker_adulte_nat
 table ip blocker_adulte_nat {
 
+    # Resolveurs amont vers lesquels le resolveur local a le droit de sortir.
+    # L'exemption ne vaut QUE pour eux, et seulement sur le port 53 : elle
+    # couvrait auparavant tout le trafic de l'utilisateur blocker-adulte, quel
+    # que soit sa destination.
+    #
+    # Les elements ecrits ici sont les resolveurs familiaux documentes dans
+    # blocker.conf. Un amont different, choisi dans blocker.conf, est ajoute au
+    # chargement depuis /var/lib/blocker-adulte/nft/amonts.nft (blocker-upstream).
+    set amonts {
+        type ipv4_addr
+        flags interval
+        auto-merge
+        elements = {
+            94.140.14.15, 94.140.15.16,         # AdGuard DNS Family
+            1.1.1.3, 1.0.0.3,                   # Cloudflare for Families
+            185.228.168.168, 185.228.169.168,   # CleanBrowsing Family
+            208.67.222.123, 208.67.220.123      # OpenDNS FamilyShield
+        }
+    }
+
     # Reseaux ou un service DNS legitime peut vivre sans etre un contournement :
     # boucle locale, reseaux prives (box, resolveur d'entreprise, conteneurs),
     # lien-local et multicast (mDNS/Bonjour : decouverte d'imprimantes, Chromecast).
@@ -37,11 +57,17 @@ table ip blocker_adulte_nat {
         }
     }
 
+    # Priorite -110, juste avant la table nat d'iptables (-100) : a priorite
+    # egale, une autre table pourrait reecrire le port 53 avant nous. Une
+    # connexion n'est traduite qu'une fois — la premiere chaine qui le fait
+    # l'emporte.
     chain output {
-        type nat hook output priority dstnat; policy accept;
+        type nat hook output priority -110; policy accept;
 
         # Le resolveur local doit pouvoir joindre ses amonts, sinon boucle.
-        meta skuid "blocker-adulte" return
+        # Seulement eux, seulement sur le port 53.
+        meta l4proto { tcp, udp } th dport 53 ip daddr @amonts \
+            meta skuid "blocker-adulte" return comment "resolveur local -> amont"
 
         # Trafic deja destine a la boucle locale : rien a faire.
         ip daddr 127.0.0.0/8 return
@@ -79,10 +105,24 @@ table ip blocker_adulte_nat {
 table ip6 blocker_adulte_nat
 delete table ip6 blocker_adulte_nat
 table ip6 blocker_adulte_nat {
-    chain output {
-        type nat hook output priority dstnat; policy accept;
 
-        meta skuid "blocker-adulte" return
+    # Equivalent IPv6 du jeu « amonts » : resolveurs familiaux documentes,
+    # completes au chargement par /var/lib/blocker-adulte/nft/amonts.nft.
+    set amonts6 {
+        type ipv6_addr
+        flags interval
+        auto-merge
+        elements = {
+            2a10:50c0::bad1:ff, 2a10:50c0::bad2:ff,         # AdGuard DNS Family
+            2606:4700:4700::1113, 2606:4700:4700::1003      # Cloudflare for Families
+        }
+    }
+
+    chain output {
+        type nat hook output priority -110; policy accept;
+
+        meta l4proto { tcp, udp } th dport 53 ip6 daddr @amonts6 \
+            meta skuid "blocker-adulte" return comment "resolveur local -> amont"
         ip6 daddr ::1 return
 
         # Pas de resolveur local en IPv6 : on renvoie vers ::1 ou l'on n'ecoute
@@ -112,12 +152,17 @@ table ip6 blocker_adulte_nat {
 #
 # Le hook initramfs, lui, inscrit l'UID en dur : la base utilisateurs n'existe
 # pas dans l'initramfs. Ici le nom se resout normalement.
+#
+# L'exemption du resolveur y reste large, volontairement : ces tables ne
+# connaissent pas les amonts choisis dans blocker.conf. C'est sans consequence,
+# la table principale ci-dessus redirigeant tout ce qui ne va pas vers un amont
+# — une seule chaine nat qui traduit suffit.
 
 table ip blocker_adulte_base_nat
 delete table ip blocker_adulte_base_nat
 table ip blocker_adulte_base_nat {
     chain output {
-        type nat hook output priority dstnat; policy accept;
+        type nat hook output priority -110; policy accept;
         meta skuid "blocker-adulte" return
         ip daddr 127.0.0.0/8 return
         meta l4proto { tcp, udp } th dport 53 redirect to :53
@@ -129,7 +174,6 @@ delete table inet blocker_adulte_base
 table inet blocker_adulte_base {
     chain output {
         type filter hook output priority filter; policy accept;
-        meta skuid "blocker-adulte" accept
         ip daddr 127.0.0.0/8 accept
         ip6 daddr ::1 accept
         tcp dport 853 reject with tcp reset
@@ -152,11 +196,16 @@ table inet blocker_adulte {
 
     # Adresses d'amorcage des principaux fournisseurs DoH. Un navigateur dont
     # la policy DoH a ete contournee ne trouvera pas son endpoint.
-    # Liste volontairement courte et documentee : elle est completee cote DNS
-    # par la liste Hagezi doh-vpn-proxy-bypass (composant 1).
+    #
+    # Les elements ecrits ici sont le socle, actif des le demarrage. Le reste
+    # vient de /var/lib/blocker-adulte/nft/doh.nft, regenere chaque jour par
+    # blocker-doh-refresh (liste communautaire + resolution des noms connus)
+    # et recharge avec ces regles : il ne vit plus seulement en memoire du
+    # noyau. « auto-merge » absorbe les adresses deja couvertes par un prefixe.
     set doh_ipv4 {
         type ipv4_addr
         flags interval
+        auto-merge
         elements = {
             1.1.1.1, 1.0.0.1,                   # Cloudflare
             8.8.8.8, 8.8.4.4,                   # Google
@@ -172,6 +221,7 @@ table inet blocker_adulte {
     set doh_ipv6 {
         type ipv6_addr
         flags interval
+        auto-merge
         elements = {
             2606:4700:4700::1111, 2606:4700:4700::1001,
             2001:4860:4860::8888, 2001:4860:4860::8844,
@@ -183,8 +233,10 @@ table inet blocker_adulte {
     chain output {
         type filter hook output priority filter; policy accept;
 
-        # Le resolveur local est le seul autorise a sortir sans contrainte.
-        meta skuid "blocker-adulte" accept
+        # Aucune exemption pour l'utilisateur blocker-adulte : le resolveur ne
+        # parle qu'en clair sur le port 53, que rien ici ne bloque. Un
+        # programme lance sous cette identite est soumis aux memes regles que
+        # les autres.
         ip daddr 127.0.0.0/8 accept
         ip6 daddr ::1 accept
 
@@ -210,6 +262,8 @@ table inet blocker_adulte {
         udp dport 853 drop
         udp dport { 784, 8853 } drop
         tcp dport 443 ip daddr @doh_ipv4 reject with tcp reset
+        tcp dport 443 ip6 daddr @doh_ipv6 reject with tcp reset
         udp dport 443 ip daddr @doh_ipv4 drop
+        udp dport 443 ip6 daddr @doh_ipv6 drop
     }
 }

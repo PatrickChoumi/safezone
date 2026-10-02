@@ -18,8 +18,9 @@
 # et toutes les applications de la machine d'un seul coup.
 #
 # Les adresses de ces hotes changent : elles sont resolues a chaque passage
-# plutot que codees en dur. En cas d'echec reseau, le fichier deja en place est
-# conserve — jamais de regression silencieuse vers « pas de SafeSearch ».
+# plutot que codees en dur. Un moteur dont l'hote strict ne repond pas garde
+# son entree precedente : il disparaissait auparavant du nouveau fichier, et
+# donc du SafeSearch, jusqu'a la mise a jour suivante.
 
 set -uo pipefail
 
@@ -27,15 +28,14 @@ set -uo pipefail
 
 blocker_require_root
 
-DEST="${BLOCKER_STATEDIR}/blocklists"
-SORTIE="${DEST}/05-safesearch.conf"
+SORTIE="${BLOCKER_LISTDIR}/05-safesearch.conf"
 
 # Desactivation explicite : on retire le fichier genere plutot que de le laisser
 # trainer, sinon le resolveur continuerait a l'appliquer.
 case "${BLOCKER_SAFESEARCH:-oui}" in
     non|no|0)
         if [ -e "${SORTIE}" ]; then
-            rm -f "${SORTIE}"
+            blocker_retirer_gere "${SORTIE}"
             blocker_notice "$(m "SafeSearch desactive par configuration" "SafeSearch disabled by configuration"), ${SORTIE} $(m "retire" "removed")"
             systemctl reload-or-restart blocker-resolver.service 2>/dev/null || true
         fi
@@ -49,8 +49,6 @@ if ! command -v dig >/dev/null 2>&1; then
 fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
-
-install -d -m 0755 "${DEST}"
 
 # ---------------------------------------------------------------------------
 # Table des correspondances
@@ -94,14 +92,82 @@ install -d -m 0755 "${DEST}"
 # machine sans proxy interceptant :
 #   curl -sI --resolve pixabay.com:443:<IP> https://pixabay.com/ | head -1
 # et constater que la reponse vient bien de Pixabay en mode filtre.
+#
+# --- Format -----------------------------------------------------------------
+# Un domaine prefixe de « = » est redirige pour ce NOM EXACT seulement
+# (« host-record= ») : ses sous-domaines restent intacts. C'est ce qui permet
+# de forcer la recherche de Yandex, servie sur le domaine nu yandex.ru, sans
+# rediriger mail.yandex.ru ni disk.yandex.ru. Les autres lignes utilisent
+# « address= », qui couvre aussi les sous-domaines.
+#
+# @GOOGLE@ est remplace par tous les domaines nationaux de Google, voir
+# domaines_google().
 correspondances() {
     cat <<'EOF'
-forcesafesearch.google.com|www.google.com www.google.fr www.google.be www.google.ch www.google.ca www.google.co.uk www.google.de www.google.es www.google.it www.google.nl www.google.pt www.google.pl www.google.com.br www.google.com.au www.google.co.in www.google.co.jp www.google.ru www.google.com.mx www.google.se www.google.dk www.google.no www.google.fi www.google.at www.google.ie www.google.gr www.google.cz www.google.ro www.google.hu www.google.com.tr www.google.co.za www.google.com.ar www.google.cl www.google.com.co www.google.dz www.google.co.ma www.google.tn www.google.sn www.google.ci
+forcesafesearch.google.com|@GOOGLE@
 restrict.youtube.com|www.youtube.com m.youtube.com youtube.com youtubei.googleapis.com youtube.googleapis.com www.youtube-nocookie.com
 strict.bing.com|www.bing.com bing.com cn.bing.com
 safe.duckduckgo.com|duckduckgo.com www.duckduckgo.com start.duckduckgo.com html.duckduckgo.com lite.duckduckgo.com
-familysearch.yandex.ru|yandex.com www.yandex.com yandex.ru www.yandex.ru
+familysearch.yandex.ru|=yandex.ru www.yandex.ru =yandex.com www.yandex.com =yandex.ua www.yandex.ua =yandex.by www.yandex.by =yandex.kz www.yandex.kz =yandex.uz www.yandex.uz =yandex.com.tr www.yandex.com.tr =yandex.az www.yandex.az =yandex.com.am www.yandex.com.am =yandex.com.ge www.yandex.com.ge =yandex.co.il www.yandex.co.il =yandex.kg www.yandex.kg =yandex.lt www.yandex.lt =yandex.lv www.yandex.lv =yandex.md www.yandex.md =yandex.tj www.yandex.tj =yandex.tm www.yandex.tm =yandex.ee www.yandex.ee =yandex.fr www.yandex.fr =ya.ru www.ya.ru
 EOF
+}
+
+# ---------------------------------------------------------------------------
+# Domaines de Google
+# ---------------------------------------------------------------------------
+# Une selection de 38 domaines laissait passer tous les autres : www.google.cm,
+# par exemple, n'y figurait pas. On part de la liste officielle,
+# https://www.google.com/supported_domains, telechargee a chaque passage, et on
+# la reunit avec la copie integree ci-dessous. La reunion ne peut qu'ajouter :
+# une liste officielle tronquee ou injoignable ne retire rien.
+domaines_google_integres() {
+    cat <<'EOF'
+google.com google.ad google.ae google.com.af google.com.ag google.al google.am
+google.co.ao google.com.ar google.as google.at google.com.au google.az google.ba
+google.com.bd google.be google.bf google.bg google.com.bh google.bi google.bj
+google.com.bn google.com.bo google.com.br google.bs google.bt google.co.bw
+google.by google.com.bz google.ca google.cd google.cf google.cg google.ch
+google.ci google.co.ck google.cl google.cm google.cn google.com.co google.co.cr
+google.com.cu google.cv google.com.cy google.cz google.de google.dj google.dk
+google.dm google.com.do google.dz google.com.ec google.ee google.com.eg
+google.es google.com.et google.fi google.com.fj google.fm google.fr google.ga
+google.ge google.gg google.com.gh google.com.gi google.gl google.gm google.gr
+google.com.gt google.gy google.com.hk google.hn google.hr google.ht google.hu
+google.co.id google.ie google.co.il google.im google.co.in google.iq google.is
+google.it google.je google.com.jm google.jo google.co.jp google.co.ke
+google.com.kh google.ki google.kg google.co.kr google.com.kw google.kz
+google.la google.com.lb google.li google.lk google.co.ls google.lt google.lu
+google.lv google.com.ly google.co.ma google.md google.me google.mg google.mk
+google.ml google.com.mm google.mn google.com.mt google.mu google.mv google.mw
+google.com.mx google.com.my google.co.mz google.com.na google.com.ng
+google.com.ni google.ne google.nl google.no google.com.np google.nr google.nu
+google.co.nz google.com.om google.com.pa google.com.pe google.com.pg
+google.com.ph google.com.pk google.pl google.pn google.com.pr google.ps
+google.pt google.com.py google.com.qa google.ro google.ru google.rw
+google.com.sa google.com.sb google.sc google.se google.com.sg google.sh
+google.si google.sk google.com.sl google.sn google.so google.sm google.sr
+google.st google.com.sv google.td google.tg google.co.th google.com.tj
+google.tl google.tm google.tn google.to google.com.tr google.tt google.com.tw
+google.co.tz google.com.ua google.co.ug google.co.uk google.com.uy
+google.co.uz google.com.vc google.co.ve google.co.vi google.com.vn google.vu
+google.ws google.rs google.co.za google.co.zm google.co.zw google.cat
+EOF
+}
+
+domaines_google() {
+    local officielle="${WORK}/google-supported"
+    {
+        domaines_google_integres | tr ' ' '\n'
+        if curl --fail --silent --location --max-time 20 \
+                --user-agent "blocker-adulte/1.0" \
+                --output "${officielle}" https://www.google.com/supported_domains 2>/dev/null; then
+            # Une ligne par domaine, avec un point initial : « .google.cm ».
+            # Tout ce qui ne ressemble pas a un domaine Google est ecarte.
+            if [ "$(grep -cE '^\.google\.[a-z.]+$' "${officielle}")" -ge 100 ]; then
+                grep -E '^\.google\.[a-z.]+$' "${officielle}" | sed 's/^\.//'
+            fi
+        fi
+    } | grep -E '^google\.[a-z.]+$' | LC_ALL=C sort -u | sed 's/^/www./' | tr '\n' ' '
 }
 
 # ---------------------------------------------------------------------------
@@ -158,30 +224,54 @@ CANDIDAT="${WORK}/05-safesearch.conf"
 } > "${CANDIDAT}"
 
 moteurs_ok=0
+moteurs_gardes=0
 moteurs_echec=0
 domaines_total=0
+GOOGLE="$(domaines_google)"
+
+# Section d'un moteur dans le fichier en place : de « # --- hote --- » a la
+# ligne vide suivante.
+section_precedente() {
+    awk -v h="# --- $1 ---" '
+        $0 == h { dedans = 1; print; next }
+        dedans && /^$/ { exit }
+        dedans { print }
+    ' "${SORTIE}" 2>/dev/null
+}
 
 while IFS='|' read -r hote domaines; do
     [ -n "${hote}" ] || continue
+    domaines="${domaines//@GOOGLE@/${GOOGLE}}"
 
     mapfile -t v4 < <(resoudre "${hote}" A)
     mapfile -t v6 < <(resoudre "${hote}" AAAA)
 
     if [ "${#v4[@]}" -eq 0 ] && [ "${#v6[@]}" -eq 0 ]; then
-        blocker_warn "SafeSearch : ${hote} $(m "non resolu, moteur ignore cette fois" "did not resolve, engine skipped this time")"
-        moteurs_echec=$((moteurs_echec + 1))
+        precedente="$(section_precedente "${hote}")"
+        if [ -n "${precedente}" ]; then
+            printf '%s\n\n' "${precedente}" >> "${CANDIDAT}"
+            blocker_warn "SafeSearch : ${hote} $(m "non resolu, entree precedente conservee" "did not resolve, previous entry kept")"
+            moteurs_gardes=$((moteurs_gardes + 1))
+        else
+            blocker_warn "SafeSearch : ${hote} $(m "non resolu et aucune entree precedente" "did not resolve and no previous entry")"
+            moteurs_echec=$((moteurs_echec + 1))
+        fi
         continue
     fi
 
     {
         printf '# --- %s ---\n' "${hote}"
         for d in ${domaines}; do
-            for ip in "${v4[@]}"; do
-                [ -n "${ip}" ] && printf 'address=/%s/%s\n' "${d}" "${ip}"
-            done
-            for ip in "${v6[@]}"; do
-                [ -n "${ip}" ] && printf 'address=/%s/%s\n' "${d}" "${ip}"
-            done
+            case "${d}" in
+                =*)
+                    for ip in "${v4[@]}" "${v6[@]}"; do
+                        [ -n "${ip}" ] && printf 'host-record=%s,%s\n' "${d#=}" "${ip}"
+                    done ;;
+                *)
+                    for ip in "${v4[@]}" "${v6[@]}"; do
+                        [ -n "${ip}" ] && printf 'address=/%s/%s\n' "${d}" "${ip}"
+                    done ;;
+            esac
             domaines_total=$((domaines_total + 1))
         done
         printf '\n'
@@ -198,6 +288,7 @@ if [ "${moteurs_ok}" -eq 0 ]; then
     blocker_warn "SafeSearch : $(m "aucun moteur resolu (machine hors ligne ?)" "no engine resolved (machine offline?)")"
     if [ -s "${SORTIE}" ]; then
         blocker_info "SafeSearch : $(m "le fichier en place est conserve" "the file already in place is kept")"
+        [ -e "${BLOCKER_RESERVEDIR}/blocklists/05-safesearch.conf" ] || blocker_publier "${SORTIE}" "${SORTIE}"
         exit 0
     fi
     blocker_err "SafeSearch : $(m "aucun fichier en place et aucune resolution possible" \
@@ -216,10 +307,12 @@ if command -v dnsmasq >/dev/null 2>&1; then
     fi
 fi
 
-install -m 0644 "${CANDIDAT}" "${SORTIE}"
+blocker_publier "${CANDIDAT}" "${SORTIE}" || exit 1
 
 blocker_info "$(m "SafeSearch actif" "SafeSearch active") : ${moteurs_ok} $(m "moteur(s)" "engine(s)"), ${domaines_total} $(m "domaine(s) rediriges vers leur variante stricte" "domain(s) redirected to their strict variant")"
+[ "${moteurs_gardes}" -gt 0 ] && \
+    blocker_warn "SafeSearch : ${moteurs_gardes} $(m "moteur(s) sur leur entree precedente, nouvelle tentative a la prochaine mise a jour" "engine(s) on their previous entry, will retry at the next update")"
 [ "${moteurs_echec}" -gt 0 ] && \
-    blocker_warn "SafeSearch : ${moteurs_echec} $(m "moteur(s) non resolu(s) cette fois, nouvelle tentative a la prochaine mise a jour" "engine(s) did not resolve this time, will retry at the next update")"
+    blocker_warn "SafeSearch : ${moteurs_echec} $(m "moteur(s) sans aucune entree" "engine(s) with no entry at all")"
 
 exit 0

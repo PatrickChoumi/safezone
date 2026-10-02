@@ -16,14 +16,17 @@
 # plateformes qui posent probleme est propre a chacun. Cette commande sert donc
 # a la tenir soi-meme.
 #
-# Le retrait demande une confirmation, sans plus : ce sont VOS blocages, pas
-# ceux de l'outil. La friction des quatre phases protege l'outil lui-meme,
-# elle n'a pas a s'appliquer a une liste qu'on tient a la main.
+# Ajouter s'applique tout de suite. Retirer, non : un retrait ne demandait
+# qu'un « o », c'est-a-dire rien du tout au moment ou l'on en a envie. Il passe
+# desormais par une demande soumise au delai (48 h par defaut), a confirmer
+# ensuite avec « blocker-delai ». Meme chose pour une exception a un blocage
+# venu des listes.
 #
 # Usage :
-#   blocker-block reddit.com x.com     bloquer un ou plusieurs domaines
-#   blocker-block --liste              voir la liste personnelle
-#   blocker-block --retirer reddit.com retirer un domaine (confirmation)
+#   blocker-block reddit.com x.com        bloquer un ou plusieurs domaines
+#   blocker-block --liste                 voir la liste personnelle et les exceptions
+#   blocker-block --retirer reddit.com    demander le retrait d'un domaine (delai)
+#   blocker-block --exception exemple.fr  demander une exception (delai)
 
 set -uo pipefail
 
@@ -31,7 +34,7 @@ set -uo pipefail
 
 blocker_require_root
 
-PERSO="${BLOCKER_STATEDIR}/blocklists/50-perso.conf"
+PERSO="${BLOCKER_LISTDIR}/50-perso.conf"
 
 if [ -t 1 ]; then
     VERT=$'\033[32m'; GRAS=$'\033[1m'; GRIS=$'\033[90m'; Z=$'\033[0m'
@@ -45,7 +48,7 @@ entete() {
 # blocker-adulte — personal blocklist
 #
 # Maintained by « blocker-block ». This file is never overwritten by the list
-# update nor by self-heal: whatever you add here stays.
+# update. Edited by hand, it is restored by self-heal: use blocker-block.
 #
 # dnsmasq format: « address=/domain/# » covers the domain AND all its
 # subdomains.
@@ -55,7 +58,8 @@ EOF
 # blocker-adulte — liste de blocage personnelle
 #
 # Tenue par « blocker-block ». Ce fichier n'est jamais ecrase par la mise a
-# jour des listes ni par le self-heal : ce que vous ajoutez ici reste.
+# jour des listes. Modifie a la main, il est restaure par le self-heal :
+# passer par blocker-block.
 #
 # Format dnsmasq : « address=/domaine/# » couvre le domaine ET tous ses
 # sous-domaines.
@@ -63,34 +67,67 @@ EOF
     fi
 }
 
-domaine_valide() {
-    printf '%s' "$1" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$'
-}
+domaine_valide() { blocker_domaine_valide "$1"; }
 
 lister() {
-    if [ ! -s "${PERSO}" ]; then
+    if [ ! -s "${PERSO}" ] || ! grep -q '^address=/' "${PERSO}" 2>/dev/null; then
         printf '%s\n\n' "$(m "Aucun domaine dans la liste personnelle." \
                               "No domain in the personal blocklist.")"
         printf '%s\n  sudo blocker-block reddit.com\n' "$(m "En ajouter :" "Add one:")"
+    else
+        printf '%s%s%s (%s)\n\n' "${GRAS}" \
+            "$(m "Liste personnelle" "Personal blocklist")" "${Z}" "${PERSO}"
+        grep '^address=/' "${PERSO}" 2>/dev/null | sed 's|^address=/||; s|/#$||' | sort | sed 's/^/  /'
+        printf '\n%s%d %s%s\n' "${GRIS}" \
+            "$(grep -c '^address=/' "${PERSO}" 2>/dev/null || echo 0)" \
+            "$(m "domaine(s)." "domain(s).")" "${Z}"
+    fi
+    if [ -s "${BLOCKER_EXCEPTIONS}" ]; then
+        printf '\n%s%s%s\n' "${GRAS}" "$(m "Exceptions approuvees" "Approved exceptions")" "${Z}"
+        sed 's/^/  /' "${BLOCKER_EXCEPTIONS}"
+    fi
+    local id n=0
+    while IFS= read -r id; do
+        case "$(blocker_demande_champ "${id}" type)" in
+            retirer-domaine|exception) n=$((n + 1)) ;;
+        esac
+    done < <(blocker_demandes_lister)
+    [ "${n}" -gt 0 ] && printf '\n%s%d %s%s\n' "${GRIS}" "${n}" \
+        "$(m "demande(s) en cours : blocker-delai" "pending request(s): blocker-delai")" "${Z}"
+    return 0
+}
+
+# Publie une nouvelle version de la liste personnelle (fichier gere : immuable
+# et sauvegarde dans la reserve).
+publier_perso() {
+    local candidat="$1"
+    # Une liste invalide empecherait le resolveur de demarrer : on la fait
+    # valider par dnsmasq avant de la mettre en place.
+    if command -v dnsmasq >/dev/null 2>&1 && \
+       ! dnsmasq --test --conf-file="${candidat}" >/dev/null 2>&1; then
+        blocker_err "$(m "le fichier genere est invalide, rien n'est change" \
+                        "the generated file is invalid, nothing changed")"
+        return 1
+    fi
+    blocker_publier "${candidat}" "${PERSO}"
+}
+
+# Depose une demande soumise au delai, sauf s'il en existe deja une.
+demander() {
+    local type="$1" d="$2" id
+    if id="$(blocker_demande_existante "${type}" "${d}")"; then
+        printf '  %s : %s (%s)\n' "${d}" "$(m "demande deja en cours" "request already pending")" "${id}"
         return 0
     fi
-    printf '%s%s%s (%s)\n\n' "${GRAS}" \
-        "$(m "Liste personnelle" "Personal blocklist")" "${Z}" "${PERSO}"
-    grep '^address=/' "${PERSO}" 2>/dev/null | sed 's|^address=/||; s|/#$||' | sort | sed 's/^/  /'
-    printf '\n%s%d %s%s\n' "${GRIS}" \
-        "$(grep -c '^address=/' "${PERSO}" 2>/dev/null || echo 0)" \
-        "$(m "domaine(s)." "domain(s).")" "${Z}"
+    id="$(blocker_demande_creer "${type}" "${d}")" || { blocker_err "$(m "demande impossible" "cannot file the request")"; return 1; }
+    printf '  %s : %s %s\n' "${d}" "$(m "demande enregistree, applicable le" "request filed, applicable on")" \
+        "$(blocker_date "$(blocker_demande_echeance "${id}")")"
+    printf '    %s : sudo blocker-delai --confirmer %s\n' "$(m "ensuite, la confirmer" "then confirm it")" "${id}"
+    blocker_notice "$(m "demande deposee" "request filed") (${type}) : ${d} — ${id}"
+    blocker_notifier "$(m "demande deposee" "request filed") : ${type} ${d}"
 }
 
 recharger() {
-    # Une liste invalide empecherait le resolveur de demarrer : on la fait
-    # valider par dnsmasq avant de recharger quoi que ce soit.
-    if command -v dnsmasq >/dev/null 2>&1 && \
-       ! dnsmasq --test --conf-file="${PERSO}" >/dev/null 2>&1; then
-        blocker_err "$(m "le fichier genere est invalide, rechargement annule" \
-                        "the generated file is invalid, reload cancelled")"
-        return 1
-    fi
     # Un SIGHUP ne relit pas les « address= » d'un conf-dir : il faut un
     # redemarrage complet du resolveur.
     if systemctl restart blocker-resolver.service 2>/dev/null; then
@@ -106,73 +143,93 @@ recharger() {
 # ---------------------------------------------------------------------------
 case "${1:-}" in
     --liste|--list) lister; exit 0 ;;
-    -h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     "")
         printf '%s\n\n' "$(m "Aucun domaine indique." "No domain given.")"
-        printf '  sudo blocker-block reddit.com x.com    %s\n' "$(m "bloquer" "block")"
-        printf '  sudo blocker-block --liste             %s\n' "$(m "voir la liste" "show the list")"
-        printf '  sudo blocker-block --retirer DOMAINE   %s\n\n' "$(m "retirer" "remove")"
+        printf '  sudo blocker-block reddit.com x.com     %s\n' "$(m "bloquer" "block")"
+        printf '  sudo blocker-block --liste              %s\n' "$(m "voir la liste" "show the list")"
+        printf '  sudo blocker-block --retirer DOMAINE    %s\n' "$(m "demander un retrait (delai)" "request a removal (delay)")"
+        printf '  sudo blocker-block --exception DOMAINE  %s\n\n' "$(m "demander une exception (delai)" "request an exception (delay)")"
         lister
         exit 1
         ;;
 esac
 
-install -d -m 0755 "$(dirname "${PERSO}")"
-[ -s "${PERSO}" ] || entete > "${PERSO}"
+# Nettoie ce qu'on colle depuis la barre d'adresse.
+normaliser() {
+    local d="$1"
+    d="${d#http://}"; d="${d#https://}"; d="${d%%/*}"; d="${d#www.}"
+    printf '%s' "${d}" | tr '[:upper:]' '[:lower:]'
+}
 
-# --- Retrait ----------------------------------------------------------------
-if [ "$1" = "--retirer" ] || [ "$1" = "--remove" ]; then
-    shift
-    [ $# -gt 0 ] || { echo "$(m "Indiquer au moins un domaine a retirer." \
-                               "Give at least one domain to remove.")" >&2; exit 2; }
+# --- Retrait et exception : soumis au delai ---------------------------------
+case "$1" in
+    --retirer|--remove|--exception)
+        mode="$1"; shift
+        [ $# -gt 0 ] || { echo "$(m "Indiquer au moins un domaine." "Give at least one domain.")" >&2; exit 2; }
+        printf '%s\n' "$(m "Ce qui affaiblit la protection attend le delai" "Whatever weakens the protection waits for the delay") (${BLOCKER_DELAI_HEURES} h)."
+        for d in "$@"; do
+            d="$(normaliser "${d}")"
+            if ! domaine_valide "${d}"; then
+                blocker_err "$(m "domaine invalide, ignore" "invalid domain, skipped") : ${d}"
+                continue
+            fi
+            if [ "${mode}" = "--exception" ]; then
+                if grep -qxF "${d}" "${BLOCKER_EXCEPTIONS}" 2>/dev/null; then
+                    printf '  %s %s\n' "${d}" "$(m "est deja une exception." "is already an exception.")"
+                    continue
+                fi
+                demander exception "${d}"
+            else
+                if ! grep -qxF "address=/${d}/#" "${PERSO}" 2>/dev/null; then
+                    printf '  %s %s\n' "${d}" \
+                        "$(m "n est pas dans la liste personnelle." "is not in the personal blocklist.")"
+                    continue
+                fi
+                demander retirer-domaine "${d}"
+            fi
+        done
+        exit 0
+        ;;
+esac
 
-    for d in "$@"; do
-        if ! grep -q "^address=/${d}/" "${PERSO}" 2>/dev/null; then
-            printf '  %s %s\n' "${d}" \
-                "$(m "n est pas dans la liste personnelle." "is not in the personal blocklist.")"
-            continue
-        fi
-        printf '%s %s ? [%s] ' "$(m "Retirer" "Remove")" "${d}" "$(m "o/N" "y/N")"
-        read -r rep </dev/tty || rep=""
-        case "${rep}" in
-            o|O|oui|y|Y|yes)
-                sed -i "\|^address=/${d}/|d" "${PERSO}"
-                blocker_notice "$(m "domaine retire de la liste personnelle" \
-                                   "domain removed from the personal blocklist") : ${d}"
-                ;;
-            *) printf '  %s\n' "$(m "Conserve." "Kept.")" ;;
-        esac
-    done
-    recharger
-    exit 0
+# --- Ajout : immediat --------------------------------------------------------
+CANDIDAT="$(mktemp)"
+trap 'rm -f "${CANDIDAT}"' EXIT
+if [ -s "${PERSO}" ]; then
+    cat "${PERSO}" > "${CANDIDAT}"
+else
+    entete > "${CANDIDAT}"
 fi
 
-# --- Ajout ------------------------------------------------------------------
 ajoutes=0
+premier=""
 for d in "$@"; do
-    d="${d#http://}"; d="${d#https://}"; d="${d%%/*}"; d="${d#www.}"
+    d="$(normaliser "${d}")"
 
     if ! domaine_valide "${d}"; then
         blocker_err "$(m "domaine invalide, ignore" "invalid domain, skipped") : ${d}"
         continue
     fi
-    if grep -q "^address=/${d}/" "${PERSO}" 2>/dev/null; then
+    if grep -qxF "address=/${d}/#" "${CANDIDAT}" 2>/dev/null; then
         printf '  %s %s\n' "${d}" "$(m "deja bloque." "already blocked.")"
         continue
     fi
 
-    printf 'address=/%s/#\n' "${d}" >> "${PERSO}"
+    printf 'address=/%s/#\n' "${d}" >> "${CANDIDAT}"
     printf '  %s+%s %s %s\n' "${VERT}" "${Z}" "${d}" \
         "$(m "bloque (et tous ses sous-domaines)" "blocked (and all its subdomains)")"
     blocker_notice "$(m "domaine ajoute a la liste personnelle" \
                        "domain added to the personal blocklist") : ${d}"
     ajoutes=$((ajoutes + 1))
+    [ -n "${premier}" ] || premier="${d}"
 done
 
 if [ "${ajoutes}" -gt 0 ]; then
+    publier_perso "${CANDIDAT}" || exit 1
     recharger
     printf '\n%s%s%s dig +short @127.0.0.1 %s\n' "${GRIS}" \
-        "$(m "Verifier :" "Check:")" "${Z}" "$1"
+        "$(m "Verifier :" "Check:")" "${Z}" "${premier}"
 fi
 
 exit 0

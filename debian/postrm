@@ -20,16 +20,24 @@ purger_fichiers_etc() {
     for f in \
         /etc/dnsmasq.d/blocker-adulte.conf \
         /etc/nftables/blocker-adulte.nft \
+        /etc/nftables/blocker-adulte-tunnels.nft \
         /etc/systemd/resolved.conf.d/blocker-adulte.conf \
         /etc/NetworkManager/dispatcher.d/90-blocker-adulte \
         /etc/audit/rules.d/blocker-adulte.rules \
         /etc/initramfs-tools/hooks/blocker-adulte \
         /etc/initramfs-tools/scripts/init-bottom/blocker-adulte \
         /etc/firefox/policies/policies.json \
+        /etc/firefox-esr/policies/policies.json \
+        /etc/librewolf/policies/policies.json \
+        /etc/waterfox/policies/policies.json \
+        /etc/floorp/policies/policies.json \
         /etc/opt/chrome/policies/managed/blocker-adulte.json \
         /etc/chromium/policies/managed/blocker-adulte.json \
+        /etc/chromium-browser/policies/managed/blocker-adulte.json \
         /etc/opt/chromium/policies/managed/blocker-adulte.json \
-        /etc/brave/policies/managed/blocker-adulte.json
+        /etc/brave/policies/managed/blocker-adulte.json \
+        /etc/opt/edge/policies/managed/blocker-adulte.json \
+        /etc/vivaldi/policies/managed/blocker-adulte.json
     do
         if [ -e "$f" ]; then
             chattr -i "$f" 2>/dev/null || true
@@ -54,6 +62,7 @@ purger_tables_nftables() {
     nft delete table ip blocker_adulte_nat        2>/dev/null || true
     nft delete table ip6 blocker_adulte_nat       2>/dev/null || true
     nft delete table inet blocker_adulte          2>/dev/null || true
+    nft delete table inet blocker_adulte_tunnels  2>/dev/null || true
     nft delete table ip blocker_adulte_base_nat   2>/dev/null || true
     nft delete table inet blocker_adulte_base     2>/dev/null || true
 }
@@ -87,6 +96,7 @@ case "$1" in
         purger_tables_nftables
         regenerer_initramfs
 
+        chattr -R -i -a /var/lib/blocker-adulte 2>/dev/null || true
         rm -rf /var/lib/blocker-adulte || true
         rm -rf /etc/blocker-adulte || true
         rm -rf /run/blocker-adulte || true

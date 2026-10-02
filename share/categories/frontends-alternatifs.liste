@@ -1,0 +1,72 @@
+# blocker-adulte — categorie « frontends-alternatifs »
+#
+# Interfaces alternatives de YouTube et de Reddit. Elles affichent le meme
+# contenu que le site d'origine, mais sur un autre domaine : le mode
+# restreint de YouTube, force par blocker-safesearch, ne s'y applique pas.
+#
+# Les instances naissent et meurent vite ; cette liste couvre les plus
+# connues et les services qui redirigent vers une instance au hasard. Pour en
+# bloquer une autre : sudo blocker-block <domaine>.
+
+# --- Services de redirection vers des instances -----------------------------
+farside.link
+privacyredirect.com
+redirect.invidious.io
+
+# --- Invidious (YouTube) -----------------------------------------------------
+invidious.io
+yewtu.be
+inv.nadeko.net
+invidious.nerdvpn.de
+invidious.privacyredirect.com
+invidious.jing.rocks
+invidious.f5.si
+inv.tux.pizza
+invidious.protokolla.fi
+invidious.perennialte.ch
+invidious.materialio.us
+invidious.fdn.fr
+invidious.lunar.icu
+invidious.private.coffee
+invidious.flokinet.to
+invidious.reallyaweso.me
+invidious.privacydev.net
+invidious.drgns.space
+iv.ggtyler.dev
+iv.melmac.space
+yt.artemislena.eu
+yt.cdaut.de
+vid.puffyan.us
+
+# --- Piped (YouTube) ---------------------------------------------------------
+piped.video
+piped.kavin.rocks
+pipedapi.kavin.rocks
+piped.adminforge.de
+piped.yt
+piped.private.coffee
+piped.privacydev.net
+piped.mha.fi
+piped.smnz.de
+poketube.fun
+
+# --- Redlib, Libreddit, Teddit (Reddit) --------------------------------------
+safereddit.com
+redlib.catsarch.com
+redlib.perennialte.ch
+redlib.privacyredirect.com
+redlib.ducks.party
+libreddit.kavin.rocks
+libreddit.spike.codes
+libreddit.northboot.xyz
+libreddit.privacydev.net
+libreddit.lunar.icu
+libreddit.projectsegfau.lt
+libreddit.bus-hit.me
+l.opnxng.com
+reddit.rtrace.io
+rl.bloat.cat
+red.artemislena.eu
+lr.artemislena.eu
+teddit.net
+teddit.zaggy.nl

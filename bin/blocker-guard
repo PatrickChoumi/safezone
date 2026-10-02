@@ -9,14 +9,18 @@
 #   2. verifie que le resolveur repond reellement a une requete DNS ;
 #   3. verifie que les regles nftables attendues sont chargees ;
 #   4. verifie que les policies navigateur sont en place ;
-#   5. verifie que le drop-in systemd-resolved est intact.
+#   5. verifie que le drop-in systemd-resolved est intact ;
+#   6. verifie que les timers et l'unite path sont actives et en marche — le
+#      self-heal, la mise a jour des listes et le rapport hebdomadaire ne
+#      reposaient sur rien d'autre que leur propre activation.
 #
 # Chaque ecart detecte est journalise AVANT d'etre corrige. Aucune correction
 # n'est silencieuse : « journalctl -u blocker-guard » donne l'historique complet.
 #
-# Cette boucle se met entierement en retrait si la procedure de desinstallation
-# documentee est en cours. Elle ne surveille pas les commandes de l'utilisateur
-# et ne cherche pas a devancer une suppression.
+# Cette boucle se met entierement en retrait quand une desinstallation a ete
+# demandee, que le delai est passe et qu'elle a commence. Sans demande arrivee
+# a echeance, un drapeau de retrait ou une unite desactivee sont remis en place,
+# et le journal indique la commande qui aboutit.
 
 set -uo pipefail
 
@@ -113,19 +117,20 @@ while true; do
     pass=$((pass + 1))
 
     if blocker_stand_down_if_optout; then
-        blocker_notify_status "retrait volontaire en cours : garde en veille"
-        # On ne quitte pas : si l'utilisateur annule sa desinstallation en
-        # supprimant le drapeau, la garde reprend d'elle-meme.
+        blocker_notify_status "desinstallation autorisee en cours : garde en veille"
+        # On ne quitte pas : si l'utilisateur annule sa desinstallation, la
+        # garde reprend d'elle-meme.
         blocker_sleep "${BLOCKER_GUARD_INTERVAL}"
         continue
     fi
 
+    blocker_reparer_retrait_non_autorise || true
     verifier_resolveur
     verifier_nftables
     verifier_policies
     verifier_resolved
 
-    blocker_notify_status "passe ${pass} : resolveur, nftables, policies et resolved verifies"
+    blocker_notify_status "passe ${pass} : resolveur, nftables, policies, resolved et timers verifies"
 
     # Bilan periodique dans le journal, meme quand tout va bien : un watchdog
     # muet est indiscernable d'un watchdog mort.

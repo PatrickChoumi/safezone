@@ -1,0 +1,16 @@
+[Unit]
+Description=blocker-adulte : rapport hebdomadaire (verification quotidienne)
+Documentation=file:///usr/share/doc/blocker-adulte/README.md
+
+# Surveille par blocker-guard et blocker-selfheal : desactiver ce timer sans
+# demande de desinstallation arrivee a echeance le fait reactiver.
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=2h
+AccuracySec=5min
+Unit=blocker-rapport.service
+
+[Install]
+WantedBy=timers.target

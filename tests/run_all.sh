@@ -28,8 +28,12 @@ fi
 # test_watchdog_cross_restart.sh coupe le DNS quelques secondes : il n'est pas
 # dans la liste par defaut pour ne pas surprendre.
 TESTS="test_no_hidden_files.sh
+test_coherence.sh
 test_portabilite.sh
 test_i18n.sh
+test_listes.sh
+test_delai.sh
+test_nftables_reference.sh
 test_dns_leak.sh
 test_doh_blocked.sh
 test_safesearch.sh

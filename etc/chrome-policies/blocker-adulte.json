@@ -5,11 +5,12 @@
   "BuiltInDnsClientEnabled": false,
   "QuicAllowed": false,
   "IncognitoModeAvailability": 1,
+  "BrowserGuestModeEnabled": false,
   "SafeSitesFilterBehavior": 1,
   "ForceGoogleSafeSearch": true,
   "ForceYouTubeRestrict": 2,
   "ProxySettings": {
-    "ProxyMode": "system"
+    "ProxyMode": "direct"
   },
   "URLBlocklist": [
     "chrome://flags",

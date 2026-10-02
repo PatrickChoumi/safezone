@@ -202,12 +202,24 @@ resoudre_via() {
 
 resoudre_amont() { resoudre_via "${BLOCKER_UPSTREAM_1}" "$1"; }
 
-# Premier resolveur neutre joignable, s'il y en a un. Les requetes partent sous
-# l'identite blocker-adulte, la seule exemptee de la redirection nftables du
-# port 53 : c'est bien un resolveur externe qui repond, pas le notre.
+# Premier resolveur neutre joignable, s'il y en a un. L'identite blocker-adulte
+# n'est exemptee de la redirection du port 53 que vers ses amonts : une requete
+# vers un autre serveur est redirigee vers notre propre resolveur, qui repond a
+# sa place. On ne retient donc un « neutre » que si sa reponse a la question
+# CHAOS version.bind differe de celle du resolveur local — sinon c'est lui qui
+# parle, et toute comparaison serait fausse.
+version_via() {
+    runuser -u blocker-adulte -- dig +short +time=3 +tries=1 chaos txt version.bind "@$1" 2>/dev/null | head -1
+}
+VERSION_LOCALE="$(dig +short +time=3 +tries=1 chaos txt version.bind @127.0.0.1 2>/dev/null | head -1)"
 NEUTRE=""
 for s in ${NEUTRES}; do
-    if [ -n "$(resoudre_via "${s}" example.com)" ]; then NEUTRE="${s}"; break; fi
+    [ -n "$(resoudre_via "${s}" example.com)" ] || continue
+    if [ -n "${VERSION_LOCALE}" ] && [ "$(version_via "${s}")" = "${VERSION_LOCALE}" ]; then
+        info "${s} : redirige vers le resolveur local, ecarte comme reference"
+        continue
+    fi
+    NEUTRE="${s}"; break
 done
 
 if [ ! -r "${SRC}" ]; then
@@ -284,6 +296,9 @@ titre "6. Le fichier se regenere apres suppression"
 
 sauvegarde="$(mktemp)"
 cp "${FS}" "${sauvegarde}"
+# Le fichier et son repertoire sont immuables : on simule une suppression
+# faite a la main, en levant l'attribut comme il faudrait le faire.
+chattr -i "$(dirname "${FS}")" "${FS}" 2>/dev/null
 rm -f "${FS}"
 
 if /usr/lib/blocker-adulte/blocker-safesearch >/dev/null 2>&1 && [ -s "${FS}" ]; then
@@ -298,6 +313,7 @@ else
     ko "regeneration en echec, restauration de la sauvegarde"
     cp "${sauvegarde}" "${FS}"
 fi
+chattr +i "$(dirname "${FS}")" 2>/dev/null
 rm -f "${sauvegarde}"
 
 titre "7. Le fichier genere est une configuration dnsmasq valide"

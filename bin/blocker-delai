@@ -1,0 +1,375 @@
+#!/bin/bash
+# blocker-adulte — demandes en attente et delai
+#
+# Installe dans : /usr/sbin/blocker-delai  (consultation possible sans root)
+#
+# Tout ce qui affaiblit la protection passe par une demande, qui devient
+# applicable apres BLOCKER_DELAI_HEURES (48 h par defaut, 24 h au minimum) et
+# doit alors etre confirmee dans les sept jours. Ce qui renforce la protection
+# s'applique tout de suite. Le pourquoi est explique dans lib/blocker-delai.sh.
+#
+# Usage :
+#   blocker-delai                  demandes en cours, echeances, delai en vigueur
+#   blocker-delai --confirmer ID   confirmer une demande arrivee a echeance
+#   blocker-delai --annuler ID     annuler une demande (effet immediat)
+#   blocker-delai --traiter        traiter les demandes et la proposition de
+#                                  blocker.conf (fait par le self-heal toutes
+#                                  les 5 minutes)
+#
+# Modifier un reglage : editer /etc/blocker-adulte/blocker.conf, puis lancer
+# « sudo blocker-delai ». Ce fichier est une PROPOSITION ; la configuration en
+# vigueur est /var/lib/blocker-adulte/conf/blocker.conf.
+
+set -uo pipefail
+
+LIB=/usr/lib/blocker-adulte/blocker-common.sh
+if [ -r "${LIB}" ]; then
+    # shellcheck disable=SC1090
+    . "${LIB}"
+else
+    echo "blocker-adulte n'est pas installe sur cette machine." >&2
+    echo "blocker-adulte is not installed on this machine." >&2
+    exit 1
+fi
+
+if [ -t 1 ]; then
+    VERT=$'\033[32m'; ROUGE=$'\033[31m'; JAUNE=$'\033[33m'
+    GRAS=$'\033[1m'; GRIS=$'\033[90m'; Z=$'\033[0m'
+else
+    VERT=""; ROUGE=""; JAUNE=""; GRAS=""; GRIS=""; Z=""
+fi
+
+PROPOSE="${BLOCKER_CONF}"
+VIGUEUR="${BLOCKER_CONF_EN_VIGUEUR}"
+
+libelle_type() {
+    case "$1" in
+        conf)            m "modification de blocker.conf" "blocker.conf change" ;;
+        retirer-domaine) m "retrait d'un domaine de la liste personnelle" "removing a domain from the personal list" ;;
+        exception)       m "exception a un blocage" "exception to a block" ;;
+        desinstallation) m "desinstallation" "uninstall" ;;
+        *)               printf '%s' "$1" ;;
+    esac
+}
+
+libelle_etat() {
+    case "$1" in
+        attente)   printf '%s%s%s' "${JAUNE}" "$(m "en attente" "waiting")" "${Z}" ;;
+        mure)      printf '%s%s%s' "${VERT}" "$(m "applicable, a confirmer" "applicable, to confirm")" "${Z}" ;;
+        confirmee) printf '%s%s%s' "${VERT}" "$(m "confirmee" "confirmed")" "${Z}" ;;
+        expiree)   printf '%s%s%s' "${GRIS}" "$(m "expiree" "expired")" "${Z}" ;;
+        *)         printf '%s' "$1" ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Application
+# ---------------------------------------------------------------------------
+# Une nouvelle configuration est rendue effective par les memes scripts que
+# d'habitude ; chacun relit la configuration en vigueur en demarrant.
+appliquer_conf() {
+    local fichier="$1" avant="${2:-}"
+    blocker_publier "${fichier}" "${VIGUEUR}" || return 1
+    if ! cmp -s "${fichier}" "${PROPOSE}" 2>/dev/null; then
+        install -m 0644 "${fichier}" "${PROPOSE}"
+    fi
+    blocker_info "$(m "nouvelle configuration en vigueur" "new configuration in force") : ${VIGUEUR}"
+    (
+        /usr/lib/blocker-adulte/blocker-upstream
+        /usr/lib/blocker-adulte/blocker-categories
+        /usr/lib/blocker-adulte/blocker-safesearch
+        /usr/lib/blocker-adulte/blocker-apply-nftables --force
+        /usr/lib/blocker-adulte/blocker-apply-policies
+    ) >/dev/null 2>&1
+    # /etc/hosts : si la nouvelle configuration ne le verrouille plus, on leve
+    # l'attribut ; sinon le self-heal le posera a sa prochaine passe.
+    # shellcheck disable=SC1090
+    if ! ( . "${LIB}"; blocker_hosts_verrouillable ); then
+        blocker_unlock_file /etc/hosts
+    fi
+    blocker_recharger_resolveur
+    if [ -n "${avant}" ] && \
+       { [ "$(blocker_conf_valeur "${avant}" BLOCKER_LIST_URLS)" != "$(blocker_conf_valeur "${fichier}" BLOCKER_LIST_URLS)" ] || \
+         [ "$(blocker_conf_valeur "${avant}" BLOCKER_DOH_IP_URLS)" != "$(blocker_conf_valeur "${fichier}" BLOCKER_DOH_IP_URLS)" ]; }; then
+        systemctl start --no-block blocker-list-update.service 2>/dev/null || true
+    fi
+    return 0
+}
+
+# Liste geree : retire une ligne exacte « address=/domaine/# » et republie.
+retirer_ligne() {
+    local fichier="$1" domaine="$2" tmp
+    grep -qxF "address=/${domaine}/#" "${fichier}" 2>/dev/null || return 1
+    tmp="$(mktemp)" || return 1
+    grep -vxF "address=/${domaine}/#" "${fichier}" > "${tmp}"
+    blocker_publier "${tmp}" "${fichier}"
+    rm -f "${tmp}"
+    return 0
+}
+
+appliquer_retrait_domaine() {
+    local d="$1"
+    if retirer_ligne "${BLOCKER_LISTDIR}/50-perso.conf" "${d}"; then
+        blocker_notice "$(m "domaine retire de la liste personnelle (demande confirmee)" \
+                           "domain removed from the personal list (request confirmed)") : ${d}"
+    fi
+}
+
+# Une exception retire le domaine exact de toutes les listes generees et le
+# confie a l'amont, qui reste filtrant : « server=/domaine/# » envoie le nom
+# aux serveurs habituels. Une exception ne peut donc pas lever ce que l'amont
+# bloque lui-meme.
+appliquer_exception() {
+    local d="$1" tmp f
+    tmp="$(mktemp)" || return 1
+    { cat "${BLOCKER_EXCEPTIONS}" 2>/dev/null; printf '%s\n' "${d}"; } | LC_ALL=C sort -u > "${tmp}"
+    blocker_publier "${tmp}" "${BLOCKER_EXCEPTIONS}"
+    {
+        printf '# blocker-adulte — exceptions approuvees (genere, ne pas modifier)\n'
+        printf '# Ajouter une exception : sudo blocker-block --exception DOMAINE (soumis au delai)\n'
+        sed 's|.*|server=/&/#|' "${BLOCKER_EXCEPTIONS}"
+    } > "${tmp}"
+    blocker_publier "${tmp}" "${BLOCKER_LISTDIR}/90-exceptions.conf"
+    rm -f "${tmp}"
+    for f in "${BLOCKER_LISTDIR}"/10-liste-*.conf "${BLOCKER_LISTDIR}"/30-categorie-*.conf \
+             "${BLOCKER_LISTDIR}"/50-perso.conf; do
+        [ -e "${f}" ] && retirer_ligne "${f}" "${d}"
+    done
+    blocker_notice "$(m "exception appliquee (demande confirmee)" "exception applied (request confirmed)") : ${d}"
+}
+
+# ---------------------------------------------------------------------------
+# Traitement : proposition de blocker.conf, puis demandes
+# ---------------------------------------------------------------------------
+traiter_proposition() {
+    local h id etat autre ecarts
+    [ -e "${VIGUEUR}" ] || blocker_approuver_initiale
+
+    # Proposition supprimee : on remet la configuration en vigueur a sa place.
+    if [ ! -e "${PROPOSE}" ]; then
+        install -d -m 0755 "${BLOCKER_CONFDIR}"
+        install -m 0644 "${VIGUEUR}" "${PROPOSE}"
+        blocker_info "$(m "proposition absente, recreee depuis la configuration en vigueur" \
+                          "proposal missing, recreated from the configuration in force")"
+        return 0
+    fi
+
+    if cmp -s "${PROPOSE}" "${VIGUEUR}"; then
+        # L'utilisateur est revenu en arriere : les demandes en cours tombent.
+        while IFS= read -r id; do
+            blocker_demande_clore "${id}" retiree
+            blocker_info "$(m "demande retiree (blocker.conf revenu a la configuration en vigueur)" \
+                              "request withdrawn (blocker.conf back to the configuration in force)") : ${id}"
+        done < <(blocker_demandes_lister conf)
+        return 0
+    fi
+
+    h="$(blocker_empreinte "${PROPOSE}")"
+    if ! blocker_conf_valide "${PROPOSE}"; then
+        blocker_ensure_rundir
+        if [ ! -e "${BLOCKER_RUNDIR}/conf-invalide-${h}" ]; then
+            : > "${BLOCKER_RUNDIR}/conf-invalide-${h}"
+            blocker_err "$(m "proposition de blocker.conf refusee, rien n'est applique" \
+                             "blocker.conf proposal rejected, nothing is applied") :"
+            blocker_conf_lire "${PROPOSE}" | sed -n 's/^ERREUR\t/  /p' >&2
+        fi
+        return 1
+    fi
+
+    if ecarts="$(blocker_conf_comparer "${VIGUEUR}" "${PROPOSE}")"; then
+        local avant
+        avant="$(mktemp)"; cp "${VIGUEUR}" "${avant}"
+        appliquer_conf "${PROPOSE}" "${avant}"
+        rm -f "${avant}"
+        printf '%s\n' "${ecarts}" | while IFS="$(printf '\t')" read -r sens nom _a _b; do
+            case "${sens}" in
+                renforce) sens="$(m "renforce la protection" "strengthens the protection")" ;;
+                *)        sens="$(m "neutre" "neutral")" ;;
+            esac
+            blocker_info "$(m "reglage applique sans delai" "setting applied without delay") (${sens}) : ${nom}"
+        done
+        while IFS= read -r id; do blocker_demande_clore "${id}" remplacee; done < <(blocker_demandes_lister conf)
+        return 0
+    fi
+
+    # Au moins une modification affaiblit la protection : demande, delai.
+    id="$(blocker_demande_existante conf "${h}" || true)"
+    if [ -z "${id}" ]; then
+        while IFS= read -r autre; do
+            blocker_demande_clore "${autre}" remplacee
+        done < <(blocker_demandes_lister conf)
+        id="$(blocker_demande_creer conf "${h}" "${PROPOSE}")" || return 1
+        # Le journal (et donc le rapport) dit QUOI, pas seulement une empreinte.
+        blocker_historique "detail conf $(printf '%s\n' "${ecarts}" | awk -F '\t' '$1 == "affaiblit" {printf "%s%s (%s -> %s)", s, $2, $3, $4; s=", "}' | cut -c1-300)" "${id}"
+        blocker_notice "$(m "modification de blocker.conf qui affaiblit la protection : demande" \
+                           "blocker.conf change that weakens the protection: request") ${id}, $(m "applicable le" "applicable on") $(blocker_date "$(blocker_demande_echeance "${id}")")"
+        printf '%s\n' "${ecarts}" | awk -F '\t' '$1 == "affaiblit" { print "  - " $2 ": " $3 " -> " $4 }' >&2
+        blocker_notifier "$(m "demande deposee" "request filed") : $(libelle_type conf) ($(printf '%s\n' "${ecarts}" | awk -F '\t' '$1 == "affaiblit" {printf "%s%s", s, $2; s=", "}')), $(m "applicable le" "applicable on") $(blocker_date "$(blocker_demande_echeance "${id}")")"
+        return 0
+    fi
+
+    etat="$(blocker_demande_etat "${id}")"
+    case "${etat}" in
+        confirmee)
+            local avant
+            avant="$(mktemp)"; cp "${VIGUEUR}" "${avant}"
+            appliquer_conf "$(_blocker_demandes_dir)/${id}.conf" "${avant}"
+            rm -f "${avant}"
+            blocker_demande_clore "${id}" appliquee
+            blocker_notifier "$(m "demande appliquee" "request applied") : $(libelle_type conf)"
+            ;;
+        expiree)
+            install -m 0644 "${PROPOSE}" "${BLOCKER_CONFDIR}/blocker.conf.expiree"
+            install -m 0644 "${VIGUEUR}" "${PROPOSE}"
+            blocker_demande_clore "${id}" expiree
+            blocker_notice "$(m "demande expiree sans confirmation : blocker.conf remis a la configuration en vigueur" \
+                               "request expired unconfirmed: blocker.conf reset to the configuration in force") ($(m "proposition gardee dans" "proposal kept in") ${BLOCKER_CONFDIR}/blocker.conf.expiree)"
+            ;;
+    esac
+    return 0
+}
+
+traiter_demandes() {
+    local id type objet etat
+    while IFS= read -r id; do
+        type="$(blocker_demande_champ "${id}" type)"
+        objet="$(blocker_demande_champ "${id}" objet)"
+        etat="$(blocker_demande_etat "${id}")"
+        case "${type}:${etat}" in
+            conf:*) ;;   # traitee avec la proposition
+            *:expiree)
+                blocker_demande_clore "${id}" expiree
+                blocker_info "$(m "demande expiree sans confirmation" "request expired unconfirmed") : $(libelle_type "${type}") ${objet}" ;;
+            retirer-domaine:confirmee)
+                appliquer_retrait_domaine "${objet}"
+                blocker_demande_clore "${id}" appliquee
+                blocker_recharger_resolveur
+                blocker_notifier "$(m "demande appliquee" "request applied") : $(libelle_type "${type}") ${objet}" ;;
+            exception:confirmee)
+                appliquer_exception "${objet}"
+                blocker_demande_clore "${id}" appliquee
+                blocker_recharger_resolveur
+                blocker_notifier "$(m "demande appliquee" "request applied") : $(libelle_type "${type}") ${objet}" ;;
+        esac
+    done < <(blocker_demandes_lister)
+}
+
+# ---------------------------------------------------------------------------
+# Affichage
+# ---------------------------------------------------------------------------
+afficher() {
+    local id type objet etat n=0
+    printf '%sblocker-adulte — %s%s\n' "${GRAS}" "$(m "delai sur ce qui affaiblit la protection" "delay on whatever weakens the protection")" "${Z}"
+    printf '%s%s : %s h ; %s : %s h%s\n\n' "${GRIS}" \
+        "$(m "delai en vigueur" "delay in force")" "${BLOCKER_DELAI_HEURES}" \
+        "$(m "fenetre de confirmation" "confirmation window")" "${BLOCKER_DELAI_VALIDITE_HEURES}" "${Z}"
+
+    while IFS= read -r id; do
+        n=$((n + 1))
+        type="$(blocker_demande_champ "${id}" type)"
+        objet="$(blocker_demande_champ "${id}" objet)"
+        etat="$(blocker_demande_etat "${id}")"
+        printf '  %s%s%s  %s\n' "${GRAS}" "${id}" "${Z}" "$(libelle_etat "${etat}")"
+        if [ "${type}" = "conf" ]; then
+            printf '    %s\n' "$(libelle_type "${type}")"
+            blocker_conf_comparer "${VIGUEUR}" "$(_blocker_demandes_dir)/${id}.conf" 2>/dev/null \
+                | awk -F '\t' '{ printf "      %s %s : %s -> %s\n", ($1 == "affaiblit" ? "!" : " "), $2, $3, $4 }'
+        else
+            printf '    %s : %s\n' "$(libelle_type "${type}")" "${objet}"
+        fi
+        case "${etat}" in
+            attente)
+                printf '    %s %s\n' "$(m "applicable le" "applicable on")" "$(blocker_date "$(blocker_demande_echeance "${id}")")" ;;
+            mure)
+                printf '    %s %s\n' "$(m "a confirmer avant le" "to confirm before")" "$(blocker_date "$(blocker_demande_expiration "${id}")")"
+                if [ "${type}" = "desinstallation" ]; then
+                    printf '    sudo blocker-uninstall --phase 1\n'
+                else
+                    printf '    sudo blocker-delai --confirmer %s\n' "${id}"
+                fi ;;
+        esac
+        printf '    %s: sudo blocker-delai --annuler %s%s\n\n' "${GRIS}$(m "annuler" "cancel")" "${id}" "${Z}"
+    done < <(blocker_demandes_lister)
+
+    [ "${n}" -eq 0 ] && printf '  %s\n\n' "$(m "Aucune demande en cours." "No pending request.")"
+
+    if [ -r "${PROPOSE}" ] && [ -r "${VIGUEUR}" ] && ! cmp -s "${PROPOSE}" "${VIGUEUR}"; then
+        if ! blocker_conf_valide "${PROPOSE}"; then
+            printf '  %s%s%s\n' "${ROUGE}" "$(m "blocker.conf contient des lignes refusees :" "blocker.conf contains rejected lines:")" "${Z}"
+            blocker_conf_lire "${PROPOSE}" | sed -n 's/^ERREUR\t/    /p'
+            printf '\n'
+        elif [ "$(id -u)" -ne 0 ]; then
+            printf '  %s\n\n' "$(m "blocker.conf a ete modifie : « sudo blocker-delai » pour le traiter." \
+                                   "blocker.conf was modified: « sudo blocker-delai » to process it.")"
+        fi
+    fi
+
+    printf '%s%s%s\n' "${GRIS}" "$(m "Ce qui renforce la protection s'applique tout de suite ; ce qui l'affaiblit attend le delai," \
+                                       "Whatever strengthens the protection applies at once; whatever weakens it waits for the delay,")" "${Z}"
+    printf '%s%s%s\n' "${GRIS}" "$(m "puis doit etre confirme. Une envie dure vingt minutes, pas deux jours." \
+                                       "then must be confirmed. A craving lasts twenty minutes, not two days.")" "${Z}"
+}
+
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+    ""|--etat|--status)
+        if [ "$(id -u)" -eq 0 ]; then
+            traiter_proposition >/dev/null 2>&1 || true
+        fi
+        afficher
+        ;;
+    --traiter|--process)
+        blocker_require_root
+        traiter_proposition || true
+        traiter_demandes
+        ;;
+    --confirmer|--confirm)
+        blocker_require_root
+        id="${2:-}"
+        etat="$(blocker_demande_etat "${id}")"
+        case "${etat}" in
+            mure) ;;
+            attente)
+                printf '%s %s.\n' "$(m "Cette demande n'est applicable qu'a partir du" "This request is only applicable from")" \
+                    "$(blocker_date "$(blocker_demande_echeance "${id}")")" >&2
+                exit 1 ;;
+            confirmee) printf '%s\n' "$(m "Deja confirmee." "Already confirmed.")"; exit 0 ;;
+            *) printf '%s : %s\n' "$(m "Demande inconnue ou expiree" "Unknown or expired request")" "${id}" >&2; exit 1 ;;
+        esac
+        type="$(blocker_demande_champ "${id}" type)"
+        if [ "${type}" = "desinstallation" ]; then
+            printf '%s\n  sudo blocker-uninstall --phase 1\n' "$(m "Une desinstallation se confirme en lancant la phase 1 :" \
+                                                               "An uninstall is confirmed by running phase 1:")"
+            exit 0
+        fi
+        printf '%s : %s %s\n' "$(m "Demande" "Request")" "$(libelle_type "${type}")" "$(blocker_demande_champ "${id}" objet | cut -c1-16)"
+        printf '%s %s h. %s [%s] ' "$(m "Elle a ete deposee il y a plus de" "It was filed more than")" "${BLOCKER_DELAI_HEURES}" \
+            "$(m "La confirmer maintenant ?" "Confirm it now?")" "$(m "o/N" "y/N")"
+        read -r rep </dev/tty || rep=""
+        case "${rep}" in
+            o|O|oui|y|Y|yes) ;;
+            *) printf '%s\n' "$(m "Rien n'est change." "Nothing changed.")"; exit 0 ;;
+        esac
+        blocker_demande_confirmer "${id}" || { blocker_err "$(m "confirmation impossible" "cannot confirm")"; exit 1; }
+        traiter_proposition >/dev/null 2>&1 || true
+        traiter_demandes
+        printf '%s\n' "$(m "Confirmee et appliquee." "Confirmed and applied.")"
+        ;;
+    --annuler|--cancel)
+        blocker_require_root
+        id="${2:-}"
+        [ "$(blocker_demande_etat "${id}")" != "absente" ] || { printf '%s : %s\n' "$(m "Demande inconnue" "Unknown request")" "${id}" >&2; exit 1; }
+        type="$(blocker_demande_champ "${id}" type)"
+        if [ "${type}" = "conf" ] && [ -r "${VIGUEUR}" ]; then
+            install -m 0644 "${PROPOSE}" "${BLOCKER_CONFDIR}/blocker.conf.annulee" 2>/dev/null
+            install -m 0644 "${VIGUEUR}" "${PROPOSE}"
+        fi
+        blocker_demande_clore "${id}" annulee
+        blocker_notice "$(m "demande annulee" "request cancelled") : ${id}"
+        blocker_notifier "$(m "demande annulee" "request cancelled") : $(libelle_type "${type}")"
+        printf '%s\n' "$(m "Demande annulee." "Request cancelled.")"
+        ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) printf '%s : %s\n' "$(m "Argument inconnu" "Unknown argument")" "$1" >&2; exit 2 ;;
+esac
+exit 0

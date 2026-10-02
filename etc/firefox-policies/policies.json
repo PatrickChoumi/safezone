@@ -1,11 +1,14 @@
 {
   "_comment": [
     "blocker-adulte - policy Firefox (composant 3).",
-    "Deployee dans /etc/firefox/policies/policies.json par blocker-apply-policies.",
+    "Deployee dans /etc/firefox/policies/policies.json par blocker-apply-policies,",
+    "et dans /etc/<nom>/policies/ pour les derives qui lisent le meme format",
+    "(firefox-esr, librewolf, waterfox, floorp). Verifier dans about:policies.",
+    "Proxy verrouille sur « aucun proxy » : suivre le reglage du systeme laissait",
+    "un proxy systeme ou une variable d'environnement decider a sa place.",
     "Independante des policies Chrome/Chromium/Brave : desinstaller un navigateur",
     "n'affecte pas les autres. Firefox ignore les cles inconnues du niveau racine,",
-    "ce bloc _comment est donc sans effet fonctionnel.",
-    "Retrait : voir README, etape 5 de la procedure de desinstallation."
+    "ce bloc _comment est donc sans effet fonctionnel."
   ],
   "policies": {
     "DNSOverHTTPS": {
@@ -30,7 +33,7 @@
       }
     },
     "Proxy": {
-      "Mode": "system",
+      "Mode": "none",
       "Locked": true
     },
     "UserMessaging": {

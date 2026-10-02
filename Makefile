@@ -43,6 +43,8 @@ install:
 	$(INSTALL_DATA) lib/blocker-common.sh        $(DESTDIR)$(libdir)/blocker-common.sh
 	$(INSTALL_DATA) lib/blocker-os.sh            $(DESTDIR)$(libdir)/blocker-os.sh
 	$(INSTALL_DATA) lib/blocker-i18n.sh          $(DESTDIR)$(libdir)/blocker-i18n.sh
+	$(INSTALL_DATA) lib/blocker-delai.sh         $(DESTDIR)$(libdir)/blocker-delai.sh
+	$(INSTALL_DATA) lib/blocker-listes.sh        $(DESTDIR)$(libdir)/blocker-listes.sh
 	$(INSTALL_PROG) bin/blocker-configure        $(DESTDIR)$(libdir)/blocker-configure
 	$(INSTALL_PROG) bin/blocker-guard            $(DESTDIR)$(libdir)/blocker-guard
 	$(INSTALL_PROG) bin/blocker-resolver-run     $(DESTDIR)$(libdir)/blocker-resolver-run
@@ -54,6 +56,8 @@ install:
 	$(INSTALL_PROG) bin/blocker-apply-policies   $(DESTDIR)$(libdir)/blocker-apply-policies
 	$(INSTALL_PROG) bin/blocker-apply-nftables   $(DESTDIR)$(libdir)/blocker-apply-nftables
 	$(INSTALL_PROG) bin/blocker-base-rules       $(DESTDIR)$(libdir)/blocker-base-rules
+	$(INSTALL_PROG) bin/blocker-categories       $(DESTDIR)$(libdir)/blocker-categories
+	$(INSTALL_PROG) bin/blocker-rapport          $(DESTDIR)$(libdir)/blocker-rapport
 
 	# --- Script de desinstallation, dans le PATH de root ------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sbindir)
@@ -61,6 +65,7 @@ install:
 	$(INSTALL_PROG) bin/blocker-status           $(DESTDIR)$(sbindir)/blocker-status
 	$(INSTALL_PROG) bin/blocker-update           $(DESTDIR)$(sbindir)/blocker-update
 	$(INSTALL_PROG) bin/blocker-block            $(DESTDIR)$(sbindir)/blocker-block
+	$(INSTALL_PROG) bin/blocker-delai            $(DESTDIR)$(sbindir)/blocker-delai
 
 	# --- Unites systemd ----------------------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(unitdir)
@@ -72,6 +77,8 @@ install:
 	$(INSTALL_DATA) systemd/blocker-list-update.timer    $(DESTDIR)$(unitdir)/
 	$(INSTALL_DATA) systemd/blocker-policies.path        $(DESTDIR)$(unitdir)/
 	$(INSTALL_DATA) systemd/blocker-policies.service     $(DESTDIR)$(unitdir)/
+	$(INSTALL_DATA) systemd/blocker-rapport.service      $(DESTDIR)$(unitdir)/
+	$(INSTALL_DATA) systemd/blocker-rapport.timer        $(DESTDIR)$(unitdir)/
 
 	# --- Modeles de configuration -----------------------------------------
 	# Les fichiers reels dans /etc sont poses par blocker-configure, pas par
@@ -105,6 +112,10 @@ install:
 		$(DESTDIR)$(sharedir)/policies/chromium-policies.json
 	$(INSTALL_DATA) etc/brave-policies/blocker-adulte.json \
 		$(DESTDIR)$(sharedir)/policies/brave-policies.json
+	$(INSTALL_DATA) etc/edge-policies/blocker-adulte.json \
+		$(DESTDIR)$(sharedir)/policies/edge-policies.json
+	$(INSTALL_DATA) etc/vivaldi-policies/blocker-adulte.json \
+		$(DESTDIR)$(sharedir)/policies/vivaldi-policies.json
 
 	# --- Hooks initramfs (modeles ; poses par blocker-configure) ------------
 	# Trois generateurs d'images selon la distribution : initramfs-tools
@@ -132,6 +143,13 @@ install:
 	$(INSTALL_DATA) share/blocklists/00-base.conf \
 		$(DESTDIR)$(sharedir)/blocklists/00-base.conf
 
+	# --- Categories de blocage livrees -------------------------------------
+	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/categories
+	$(INSTALL_DATA) share/categories/moteurs-sans-filtre.liste \
+		$(DESTDIR)$(sharedir)/categories/moteurs-sans-filtre.liste
+	$(INSTALL_DATA) share/categories/frontends-alternatifs.liste \
+		$(DESTDIR)$(sharedir)/categories/frontends-alternatifs.liste
+
 	# --- Tests --------------------------------------------------------------
 	$(INSTALL_DIR) $(DESTDIR)$(sharedir)/tests
 	$(INSTALL_PROG) tests/test_dns_leak.sh              $(DESTDIR)$(sharedir)/tests/
@@ -144,6 +162,10 @@ install:
 	$(INSTALL_PROG) tests/test_uninstall_phases.sh     $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/test_portabilite.sh           $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/test_i18n.sh                  $(DESTDIR)$(sharedir)/tests/
+	$(INSTALL_PROG) tests/test_delai.sh                 $(DESTDIR)$(sharedir)/tests/
+	$(INSTALL_PROG) tests/test_listes.sh                $(DESTDIR)$(sharedir)/tests/
+	$(INSTALL_PROG) tests/test_coherence.sh             $(DESTDIR)$(sharedir)/tests/
+	$(INSTALL_PROG) tests/test_nftables_reference.sh    $(DESTDIR)$(sharedir)/tests/
 	$(INSTALL_PROG) tests/run_all.sh                    $(DESTDIR)$(sharedir)/tests/
 
 	# --- Documentation ------------------------------------------------------
@@ -155,10 +177,10 @@ install:
 
 uninstall:
 	@echo "Ne pas utiliser « make uninstall »."
-	@echo "La desinstallation se fait en quatre phases :"
-	@echo "  sudo blocker-uninstall --etat      # ou en est-on"
-	@echo "  sudo blocker-uninstall --phase 1   # commencer"
-	@echo "  sudo blocker-uninstall --manuel    # procedure manuelle equivalente"
+	@echo "La desinstallation commence par une demande, soumise a un delai :"
+	@echo "  sudo blocker-uninstall --etat       # ou en est-on"
+	@echo "  sudo blocker-uninstall --demander   # deposer la demande"
+	@echo "  sudo blocker-uninstall --manuel     # procedure manuelle equivalente"
 	@exit 1
 
 # Verification syntaxique de tous les scripts du depot.

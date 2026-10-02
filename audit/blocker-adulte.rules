@@ -24,18 +24,38 @@
 -w /etc/systemd/resolved.conf.d/blocker-adulte.conf -p wa -k blocker-adulte
 -w /etc/dnsmasq.d/blocker-adulte.conf -p wa -k blocker-adulte
 
+# --- Configuration de l'outil ---------------------------------------------
+# blocker.conf (la proposition) et, plus bas, la configuration en vigueur : ce
+# sont les fichiers ou un affaiblissement se prepare.
+-w /etc/blocker-adulte -p wa -k blocker-adulte
+
 # --- Regles nftables -------------------------------------------------------
 -w /etc/nftables.conf -p wa -k blocker-adulte-nftables
+-w /etc/sysconfig/nftables.conf -p wa -k blocker-adulte-nftables
 -w /etc/nftables/blocker-adulte.nft -p wa -k blocker-adulte-nftables
+-w /etc/nftables/blocker-adulte-tunnels.nft -p wa -k blocker-adulte-nftables
+
+# --- Zone d'etat : listes, adresses, configuration en vigueur, demandes ----
+# Seulement les ecritures faites par une personne (auid defini) : les services
+# de l'outil, qui ecrivent ici chaque jour, n'ont pas d'auid et ne noient donc
+# pas le journal.
+-a always,exit -F dir=/var/lib/blocker-adulte -F perm=wa -F auid>=1000 -F auid!=4294967295 -k blocker-adulte-etat
 
 # --- Policies navigateur ---------------------------------------------------
 # Les repertoires sont surveilles recursivement : la creation d'un fichier
 # concurrent dans le meme repertoire est donc visible elle aussi.
 -w /etc/firefox/policies -p wa -k blocker-adulte-policies
+-w /etc/firefox-esr/policies -p wa -k blocker-adulte-policies
+-w /etc/librewolf/policies -p wa -k blocker-adulte-policies
+-w /etc/waterfox/policies -p wa -k blocker-adulte-policies
+-w /etc/floorp/policies -p wa -k blocker-adulte-policies
 -w /etc/opt/chrome/policies/managed -p wa -k blocker-adulte-policies
 -w /etc/chromium/policies/managed -p wa -k blocker-adulte-policies
+-w /etc/chromium-browser/policies/managed -p wa -k blocker-adulte-policies
 -w /etc/opt/chromium/policies/managed -p wa -k blocker-adulte-policies
 -w /etc/brave/policies/managed -p wa -k blocker-adulte-policies
+-w /etc/opt/edge/policies/managed -p wa -k blocker-adulte-policies
+-w /etc/vivaldi/policies/managed -p wa -k blocker-adulte-policies
 
 # --- Unites systemd du projet ----------------------------------------------
 -w /lib/systemd/system/blocker-resolver.service -p wa -k blocker-adulte-units
@@ -44,13 +64,25 @@
 -w /lib/systemd/system/blocker-selfheal.timer -p wa -k blocker-adulte-units
 -w /lib/systemd/system/blocker-list-update.service -p wa -k blocker-adulte-units
 -w /lib/systemd/system/blocker-list-update.timer -p wa -k blocker-adulte-units
--w /etc/systemd/system/blocker-resolver.service.d -p wa -k blocker-adulte-units
--w /etc/systemd/system/blocker-guard.service.d -p wa -k blocker-adulte-units
+-w /lib/systemd/system/blocker-rapport.timer -p wa -k blocker-adulte-units
+-w /lib/systemd/system/blocker-policies.path -p wa -k blocker-adulte-units
+# /etc/systemd/system entier : c'est la qu'atterrissent un masquage
+# (lien vers /dev/null), une surcharge « .d » et les liens d'activation.
+-w /etc/systemd/system -p wa -k blocker-adulte-units
 
 # --- Executables et modeles du projet --------------------------------------
 -w /usr/lib/blocker-adulte -p wa -k blocker-adulte-bin
 -w /usr/share/blocker-adulte -p wa -k blocker-adulte-bin
 -w /usr/sbin/blocker-uninstall -p wa -k blocker-adulte-bin
+-w /usr/sbin/blocker-delai -p wa -k blocker-adulte-bin
+
+# --- Commandes sensibles lancees en root par une personne -----------------
+# Pas les executions des services (sans auid) : seulement celles qu'une
+# personne lance via sudo. Le rapport hebdomadaire en donne la ligne de
+# commande complete.
+-a always,exit -F path=/usr/bin/chattr -F perm=x -F auid>=1000 -F auid!=4294967295 -F euid=0 -k blocker-adulte-cmd
+-a always,exit -F path=/usr/sbin/nft -F perm=x -F auid>=1000 -F auid!=4294967295 -F euid=0 -k blocker-adulte-cmd
+-a always,exit -F path=/usr/bin/systemctl -F perm=x -F auid>=1000 -F auid!=4294967295 -F euid=0 -k blocker-adulte-cmd
 
 # --- Hooks initramfs et NetworkManager -------------------------------------
 -w /etc/initramfs-tools/hooks/blocker-adulte -p wa -k blocker-adulte-initramfs

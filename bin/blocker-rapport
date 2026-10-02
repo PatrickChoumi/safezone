@@ -1,0 +1,282 @@
+#!/bin/bash
+# blocker-adulte — rapport hebdomadaire a une personne de confiance
+#
+# Installe dans : /usr/lib/blocker-adulte/blocker-rapport
+# Lance par     : blocker-rapport.timer (chaque jour ; envoie si le dernier
+#                 rapport a plus de sept jours), et a chaque demande deposee
+#
+# POURQUOI
+#
+# auditd enregistre tout, mais personne ne lisait ces journaux. Un journal que
+# personne ne lit ne retient rien. Ce rapport part chaque semaine vers une
+# personne de confiance : reparations, demandes de desactivation, modifications
+# des fichiers proteges, demarrages de la machine. Il part MEME QUAND RIEN NE
+# S'EST PASSE, numerote : si les rapports s'arretent, elle le remarque.
+#
+# Une demande qui affaiblit la protection (desinstallation, retrait d'un
+# domaine, modification de blocker.conf) lui est en plus signalee tout de
+# suite, au moment ou elle est deposee — pendant le delai, donc.
+#
+# Le rapport ne contient aucune adresse de site adulte et aucun historique de
+# navigation : il dit ce que l'OUTIL a vu et fait, pas ce que vous avez visite.
+#
+# Configuration, dans /etc/blocker-adulte/blocker.conf :
+#   BLOCKER_RAPPORT_DESTINATAIRE   adresse de la personne de confiance
+#   BLOCKER_RAPPORT_EXPEDITEUR     adresse d'expedition
+#   BLOCKER_RAPPORT_SMTP           smtps://serveur:465 ou smtp://serveur:587 ;
+#                                  vide : sendmail local s'il existe
+# et, pour l'authentification SMTP, une ligne « utilisateur:mot-de-passe »
+# dans /etc/blocker-adulte/rapport-smtp.secret (mode 0600, root seulement).
+#
+# Changer de destinataire ou de serveur affaiblit la surveillance : ces
+# modifications attendent le delai, et le destinataire actuel en est prevenu.
+#
+# Usage :
+#   blocker-rapport                    envoie le rapport s'il est du
+#   blocker-rapport --apercu           affiche le rapport, n'envoie rien
+#   blocker-rapport --envoyer          envoie le rapport maintenant
+#   blocker-rapport --test             envoie un court message de verification
+#   blocker-rapport --evenement TEXTE  envoie un message court (usage interne)
+
+set -uo pipefail
+
+. /usr/lib/blocker-adulte/blocker-common.sh
+
+blocker_require_root
+
+SECRET="${BLOCKER_CONFDIR}/rapport-smtp.secret"
+NUMERO="${BLOCKER_RAPPORTDIR}/numero"
+DERNIER="${BLOCKER_RAPPORTDIR}/dernier-envoi"
+PERIODE=$((7 * 86400))
+
+install -d -m 0755 "${BLOCKER_RAPPORTDIR}"
+
+HOTE="$(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo machine)"
+
+# ---------------------------------------------------------------------------
+# Envoi
+# ---------------------------------------------------------------------------
+# Deux voies : un serveur SMTP joint par curl (deja une dependance de l'outil),
+# ou le sendmail local s'il y en a un. Le mot de passe ne passe jamais sur la
+# ligne de commande, ou « ps » le montrerait : il va dans un fichier de
+# configuration curl temporaire, lisible par root seulement.
+envoyer_courriel() {
+    local sujet="$1" corps="$2" message cfg rc
+    if [ -z "${BLOCKER_RAPPORT_DESTINATAIRE:-}" ]; then
+        return 2
+    fi
+    message="$(mktemp)" || return 1
+    {
+        printf 'From: %s\r\n' "${BLOCKER_RAPPORT_EXPEDITEUR:-blocker-adulte@${HOTE}}"
+        printf 'To: %s\r\n' "${BLOCKER_RAPPORT_DESTINATAIRE}"
+        printf 'Subject: %s\r\n' "${sujet}"
+        printf 'Date: %s\r\n' "$(LC_ALL=C date -R)"
+        printf 'MIME-Version: 1.0\r\n'
+        printf 'Content-Type: text/plain; charset=UTF-8\r\n'
+        printf 'Content-Transfer-Encoding: 8bit\r\n'
+        printf '\r\n'
+        sed 's/$/\r/' "${corps}"
+    } > "${message}"
+
+    if [ -n "${BLOCKER_RAPPORT_SMTP:-}" ]; then
+        cfg="$(mktemp)" || { rm -f "${message}"; return 1; }
+        chmod 0600 "${cfg}"
+        if [ -r "${SECRET}" ]; then
+            # « utilisateur:mot-de-passe » ; guillemets et barres echappes pour
+            # le format de configuration de curl.
+            printf 'user = "%s"\n' "$(head -1 "${SECRET}" | sed 's/[\\"]/\\&/g')" > "${cfg}"
+        fi
+        curl --silent --show-error --max-time 60 --ssl-reqd \
+             --url "${BLOCKER_RAPPORT_SMTP}" \
+             --mail-from "${BLOCKER_RAPPORT_EXPEDITEUR:-blocker-adulte@${HOTE}}" \
+             --mail-rcpt "${BLOCKER_RAPPORT_DESTINATAIRE}" \
+             --upload-file "${message}" -K "${cfg}" >/dev/null
+        rc=$?
+        rm -f "${cfg}"
+    elif command -v sendmail >/dev/null 2>&1; then
+        sendmail -t < "${message}"
+        rc=$?
+    else
+        blocker_err "$(m "aucun moyen d'envoi : renseigner BLOCKER_RAPPORT_SMTP ou installer un sendmail" \
+                         "no way to send: set BLOCKER_RAPPORT_SMTP or install a sendmail")"
+        rc=1
+    fi
+    rm -f "${message}"
+    return "${rc}"
+}
+
+# ---------------------------------------------------------------------------
+# Contenu
+# ---------------------------------------------------------------------------
+section() { printf '\n== %s ==\n\n' "$1"; }
+
+journal_semaine() {
+    command -v journalctl >/dev/null 2>&1 || return 0
+    journalctl --since "7 days ago" --no-pager -o short-iso "$@" 2>/dev/null
+}
+
+rediger() {
+    local n="$1" precedent="$2" nb
+    printf '%s\n' "$(m "Rapport hebdomadaire de blocker-adulte" "blocker-adulte weekly report")"
+    printf '%s : %s\n' "$(m "Machine" "Machine")" "${HOTE}"
+    printf '%s : %s\n' "$(m "Rapport n°" "Report no.")" "${n}"
+    printf '%s : %s\n' "$(m "Etabli le" "Written on")" "$(date '+%Y-%m-%d %H:%M')"
+    printf '%s : %s\n' "$(m "Rapport precedent" "Previous report")" "${precedent:-$(m "aucun" "none")}"
+    printf '\n%s %s.\n' "$(m "Le prochain rapport doit arriver avant le" "The next report should arrive before")" \
+        "$(date -d '+8 days' '+%Y-%m-%d' 2>/dev/null)"
+    printf '%s\n' "$(m "S'il n'arrive pas, c'est en soi une information : demandez pourquoi." \
+                       "If it does not arrive, that is information in itself: ask why.")"
+
+    section "$(m "Etat de l'outil" "Tool status")"
+    /usr/sbin/blocker-status --trous 2>&1 | sed 's/\x1b\[[0-9;]*m//g'
+
+    section "$(m "Demandes soumises au delai (7 derniers jours)" "Requests subject to the delay (last 7 days)")"
+    if [ -r "${BLOCKER_DELAIDIR}/historique" ]; then
+        awk -v debut="$(date -d '7 days ago' '+%Y-%m-%d %H:%M' 2>/dev/null)" -F '\t' \
+            '$1 >= debut { print "  " $1 "  " $2 }' "${BLOCKER_DELAIDIR}/historique" \
+            | sed -E 's/\b([0-9a-f]{8})[0-9a-f]{56}\b/\1/g'
+    fi
+    nb=0
+    while IFS= read -r id; do
+        nb=$((nb + 1))
+        printf '  %s : %s %s — %s\n' "$(m "en cours" "pending")" \
+            "$(blocker_demande_champ "${id}" type)" "$(blocker_demande_champ "${id}" objet | cut -c1-40)" \
+            "$(blocker_demande_etat "${id}")"
+    done < <(blocker_demandes_lister)
+    [ "${nb}" -eq 0 ] && printf '  %s\n' "$(m "Aucune demande en cours." "No pending request.")"
+
+    section "$(m "Reparations automatiques (7 derniers jours)" "Automatic repairs (last 7 days)")"
+    local rep
+    rep="$(journal_semaine -u blocker-guard -u blocker-selfheal -u blocker-resolver -u blocker-policies \
+           | grep -E 'REPARATION|REPAIR')"
+    nb="$(printf '%s' "${rep}" | grep -c . || true)"
+    printf '  %s : %s\n' "$(m "Nombre" "Count")" "${nb}"
+    [ "${nb}" -gt 0 ] && printf '%s\n' "${rep}" | tail -25 | sed 's/^/  /'
+
+    section "$(m "Modifications des fichiers proteges (auditd)" "Changes to protected files (auditd)")"
+    if command -v ausearch >/dev/null 2>&1; then
+        local cle total=0 c
+        for cle in blocker-adulte blocker-adulte-nftables blocker-adulte-policies blocker-adulte-units \
+                   blocker-adulte-bin blocker-adulte-initramfs blocker-adulte-etat blocker-adulte-cmd; do
+            c="$(ausearch -k "${cle}" --start week-ago --format raw 2>/dev/null | grep -c '^type=SYSCALL' || true)"
+            total=$((total + c))
+            [ "${c}" -gt 0 ] && printf '  %-28s %s\n' "${cle}" "${c}"
+        done
+        [ "${total}" -eq 0 ] && printf '  %s\n' "$(m "Aucun evenement." "No event.")"
+        # Commandes sensibles lancees en root par une personne (chattr, nft,
+        # systemctl) : la ligne de commande complete.
+        ausearch -k blocker-adulte-cmd --start week-ago -i 2>/dev/null \
+            | sed -n 's/.*proctitle=//p' | tail -15 | sed 's/^/    /'
+        if [ "$(auditctl -s 2>/dev/null | awk '/^enabled/{print $2}')" != "1" ]; then
+            printf '  %s\n' "$(m "ATTENTION : l'audit du noyau est desactive, rien n'est enregistre." \
+                                 "WARNING: kernel auditing is disabled, nothing is recorded.")"
+        fi
+    else
+        printf '  %s\n' "$(m "auditd n'est pas installe : aucune trace des modifications." \
+                             "auditd is not installed: no trace of changes.")"
+    fi
+
+    section "$(m "Demarrages de la machine (7 derniers jours)" "Machine boots (last 7 days)")"
+    # Un demarrage en mode recovery, ou avec un « init= » particulier, est le
+    # signal le plus net d'une tentative de passer a cote de l'outil.
+    journal_semaine -k | grep 'Command line:' | while IFS= read -r l; do
+        date_boot="${l%% *}"
+        ligne="${l#*Command line: }"
+        case " ${ligne} " in
+            *" recovery "*|*" single "*|*" 1 "*|*rescue*|*emergency*|*" init="*|*"systemd.unit="*)
+                printf '  %s  %s  %s\n' "${date_boot}" "$(m "A VERIFIER" "TO CHECK")" "${ligne}" ;;
+            *)
+                printf '  %s  %s\n' "${date_boot}" "$(m "normal" "normal")" ;;
+        esac
+    done
+
+    section "$(m "A quoi faire attention" "What to look out for")"
+    printf '%s\n' "$(m "- un rapport qui n'arrive pas ;" "- a report that does not arrive;")"
+    printf '%s\n' "$(m "- une demande de desinstallation ou de modification de la configuration ;" \
+                       "- an uninstall or configuration change request;")"
+    printf '%s\n' "$(m "- des reparations nombreuses, ou des fichiers mis en quarantaine ;" \
+                       "- many repairs, or files put in quarantine;")"
+    printf '%s\n' "$(m "- un demarrage marque « A VERIFIER »." "- a boot marked « TO CHECK ».")"
+}
+
+# ---------------------------------------------------------------------------
+case "${1:-}" in
+    --evenement|--event)
+        shift
+        texte="$*"
+        corps="$(mktemp)"
+        {
+            printf '%s\n\n' "$(m "Message immediat de blocker-adulte" "Immediate message from blocker-adulte")"
+            printf '%s : %s\n' "$(m "Machine" "Machine")" "${HOTE}"
+            printf '%s : %s\n\n' "$(m "Date" "Date")" "$(date '+%Y-%m-%d %H:%M')"
+            printf '%s\n\n' "${texte}"
+            printf '%s\n' "$(m "Ce qui affaiblit la protection attend un delai avant de s'appliquer, puis doit" \
+                               "Whatever weakens the protection waits for a delay before applying, then must")"
+            printf '%s\n' "$(m "etre confirme. C'est le moment d'en parler." "be confirmed. This is the time to talk about it.")"
+        } > "${corps}"
+        envoyer_courriel "[blocker-adulte] ${HOTE} — ${texte:0:80}" "${corps}"
+        rc=$?
+        rm -f "${corps}"
+        [ "${rc}" -eq 2 ] && exit 0
+        exit "${rc}"
+        ;;
+    --test)
+        corps="$(mktemp)"
+        printf '%s\n' "$(m "Message de verification : la personne de confiance recevra le rapport hebdomadaire a cette adresse." \
+                           "Test message: the trusted person will receive the weekly report at this address.")" > "${corps}"
+        envoyer_courriel "[blocker-adulte] ${HOTE} — test" "${corps}"
+        rc=$?
+        rm -f "${corps}"
+        case "${rc}" in
+            0) printf '%s\n' "$(m "Envoye." "Sent.")" ;;
+            2) printf '%s\n' "$(m "Aucun destinataire : renseigner BLOCKER_RAPPORT_DESTINATAIRE." "No recipient: set BLOCKER_RAPPORT_DESTINATAIRE.")" ;;
+            *) printf '%s\n' "$(m "Echec de l'envoi." "Sending failed.")" ;;
+        esac
+        exit "${rc}"
+        ;;
+esac
+
+MODE="${1:-auto}"
+maintenant="$(date +%s)"
+dernier="$(cat "${DERNIER}" 2>/dev/null || echo 0)"
+case "${dernier}" in ''|*[!0-9]*) dernier=0 ;; esac
+
+if [ "${MODE}" = "auto" ] && [ $((maintenant - dernier)) -lt "${PERIODE}" ]; then
+    exit 0
+fi
+
+n="$(cat "${NUMERO}" 2>/dev/null || echo 0)"
+case "${n}" in ''|*[!0-9]*) n=0 ;; esac
+n=$((n + 1))
+precedent=""
+[ "${dernier}" -gt 0 ] && precedent="$(blocker_date "${dernier}")"
+
+fichier="${BLOCKER_RAPPORTDIR}/rapport-$(date +%Y-%m-%d).txt"
+rediger "${n}" "${precedent}" > "${fichier}"
+chmod 0640 "${fichier}"
+
+if [ "${MODE}" = "--apercu" ] || [ "${MODE}" = "--preview" ]; then
+    cat "${fichier}"
+    exit 0
+fi
+
+# On garde les douze derniers rapports sur la machine.
+find "${BLOCKER_RAPPORTDIR}" -maxdepth 1 -name 'rapport-*.txt' 2>/dev/null | sort | head -n -12 | xargs -r rm -f
+
+envoyer_courriel "[blocker-adulte] ${HOTE} — $(m "rapport n°" "report no.")${n} — $(date '+%Y-%m-%d')" "${fichier}"
+rc=$?
+case "${rc}" in
+    0)
+        printf '%s\n' "${n}" > "${NUMERO}"
+        printf '%s\n' "${maintenant}" > "${DERNIER}"
+        blocker_info "$(m "rapport hebdomadaire envoye" "weekly report sent") (n°${n}) $(m "a" "to") ${BLOCKER_RAPPORT_DESTINATAIRE}"
+        ;;
+    2)
+        blocker_warn "$(m "rapport redige mais personne ne le recoit : BLOCKER_RAPPORT_DESTINATAIRE est vide" \
+                          "report written but nobody receives it: BLOCKER_RAPPORT_DESTINATAIRE is empty")" "(${fichier})"
+        ;;
+    *)
+        blocker_err "$(m "envoi du rapport en echec, nouvel essai demain" "sending the report failed, retrying tomorrow")"
+        ;;
+esac
+exit 0

@@ -8,8 +8,8 @@
 # Ce test verifie les deux sens :
 #   A. resolveur arrete   -> relance par la garde
 #   B. garde arretee      -> relance par le resolveur
-# puis il verifie que le retrait volontaire est bien respecte :
-#   C. drapeau de desinstallation pose -> AUCUNE relance
+# puis il verifie que le retrait n'est respecte qu'apres le delai :
+#   C. drapeau pose sans demande arrivee a echeance -> retire, resolveur relance
 #
 # Ce test arrete reellement des services : la resolution DNS peut etre
 # interrompue quelques secondes.
@@ -137,39 +137,39 @@ fi
 sleep 3
 
 # ---------------------------------------------------------------------------
-titre "C. Retrait volontaire -> aucune relance (ligne rouge)"
+titre "C. Drapeau de retrait sans demande arrivee a echeance -> retire"
 # ---------------------------------------------------------------------------
 
-info "Ce controle verifie que l'outil ne combat PAS une desinstallation"
-info "documentee : avec le drapeau pose, les watchdogs doivent rester passifs."
+info "Le retrait n'est respecte qu'une fois la demande de desinstallation"
+info "arrivee a echeance. Un drapeau pose sans elle doit etre retire, et le"
+info "resolveur relance."
 
-mkdir -p "$(dirname "${FLAG}")"
-printf 'test_watchdog_cross_restart.sh %s\n' "$(date -Is)" > "${FLAG}"
-
-# On laisse aux boucles le temps de voir le drapeau.
-sleep 20
-
-systemctl stop blocker-resolver.service
-info "resolveur arrete avec le drapeau de retrait pose ; attente de 40 s..."
-sleep 40
-
-if systemctl is-active --quiet blocker-resolver.service; then
-    ko "le resolveur a ete relance MALGRE le drapeau de retrait volontaire"
-    info "c'est une violation de la ligne rouge du projet : la desinstallation"
-    info "documentee ne doit jamais etre contrariee."
+if /usr/sbin/blocker-uninstall --etat 2>/dev/null | grep -q 'phase 1 possible jusqu'; then
+    warn "une demande de desinstallation est arrivee a echeance ici : partie C ignoree"
 else
-    ok "le resolveur est reste arrete : le retrait volontaire est respecte"
-fi
-
-if journalctl -u blocker-guard.service --since "${DEPART}" --no-pager 2>/dev/null \
-   | grep -q 'retrait volontaire'; then
-    ok "la mise en retrait est journalisee"
-else
-    warn "mise en retrait non trouvee dans le journal (la garde etait peut-etre deja arretee)"
+    mkdir -p "$(dirname "${FLAG}")"
+    printf 'test_watchdog_cross_restart.sh %s\n' "$(date -Is)" > "${FLAG}"
+    systemctl stop blocker-resolver.service
+    info "drapeau pose et resolveur arrete ; attente (maximum ${DELAI_MAX} s)..."
+    if delai="$(attendre_actif blocker-resolver.service "${DELAI_MAX}")"; then
+        ok "resolveur relance apres ${delai} s malgre le drapeau : le retrait attend le delai"
+    else
+        ko "le resolveur est reste arrete : un simple drapeau suffit encore a tout arreter"
+    fi
+    if [ -e "${FLAG}" ]; then
+        ko "le drapeau pose sans demande est toujours la"
+    else
+        ok "le drapeau pose sans demande a ete retire"
+    fi
+    if journalctl -u blocker-guard.service --since "${DEPART}" --no-pager 2>/dev/null \
+       | grep -qE 'drapeau de retrait pose sans demande|removal flag set without'; then
+        ok "le retrait du drapeau est journalise"
+    else
+        warn "retrait du drapeau non trouve dans le journal de la garde (le self-heal a pu le faire)"
+    fi
 fi
 
 rm -f "${FLAG}"
-info "drapeau retire, remise en route des services..."
 systemctl start blocker-resolver.service blocker-guard.service
 sleep 3
 

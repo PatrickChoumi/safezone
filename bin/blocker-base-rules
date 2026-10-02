@@ -48,7 +48,7 @@ table ip blocker_adulte_base_nat
 delete table ip blocker_adulte_base_nat
 table ip blocker_adulte_base_nat {
     chain output {
-        type nat hook output priority dstnat; policy accept;
+        type nat hook output priority -110; policy accept;
         meta skuid ${UID_BLOCKER} return
         ip daddr 127.0.0.0/8 return
         meta l4proto { tcp, udp } th dport 53 redirect to :53
@@ -60,7 +60,6 @@ delete table inet blocker_adulte_base
 table inet blocker_adulte_base {
     chain output {
         type filter hook output priority filter; policy accept;
-        meta skuid ${UID_BLOCKER} accept
         ip daddr 127.0.0.0/8 accept
         ip6 daddr ::1 accept
         tcp dport 853 reject with tcp reset

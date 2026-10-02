@@ -1,22 +1,29 @@
 #!/bin/bash
-# blocker-adulte — rafraichissement des adresses DoH (composant 2)
+# blocker-adulte — adresses des resolveurs DoH (composant 2)
 #
 # Installe dans : /usr/lib/blocker-adulte/blocker-doh-refresh
 # Lance par     : blocker-list-update (quotidien)
 #
-# Le fichier /etc/nftables/blocker-adulte.nft contient une liste d'adresses
-# d'amorcage DoH ecrites en dur. Elle rend service immediatement apres
-# l'installation, mais elle vieillit : les fournisseurs changent d'adresses et
-# en ajoutent.
+# Le jeu de regles contient une courte liste d'adresses DoH ecrites en dur :
+# elle protege des le demarrage, mais elle vieillit et reste incomplete.
 #
-# Ce script resout les noms des resolveurs DoH connus et AJOUTE les adresses
-# obtenues aux jeux nftables deja charges, sans toucher au fichier. Les ajouts
-# vivent donc en memoire du noyau et sont refaits a chaque mise a jour : aucune
-# derive silencieuse entre ce que dit le fichier et ce qui est applique.
+# Ce script ecrit ${BLOCKER_NFTDIR}/doh.nft, charge avec les regles par
+# blocker-apply-nftables. Deux sources :
 #
-# La resolution se fait sous l'identite blocker-adulte, seule exemptee de la
-# redirection DNS — sans quoi on interrogerait notre propre resolveur, qui
-# bloque justement ces noms et ne renverrait que des 0.0.0.0.
+#   1. des listes d'adresses maintenues par la communaute (BLOCKER_DOH_IP_URLS
+#      dans blocker.conf), bien plus completes qu'une liste tenue a la main ;
+#   2. la resolution des noms des principaux resolveurs DoH.
+#
+# Les adresses vivaient auparavant en memoire du noyau seulement : un
+# redemarrage ou un rechargement des regles les perdait jusqu'a la mise a jour
+# suivante. Elles sont desormais dans un fichier, recharge avec les regles.
+#
+# Chaque source garde sa version precedente si elle echoue, ou si elle revient
+# nettement plus petite que la fois d'avant : une coupure reseau ou une page
+# d'erreur ne doit pas vider le jeu.
+#
+# Les adresses sont filtrees (voir blocker_filtrer_ip) : aucune liste tierce ne
+# peut faire bloquer le reseau local ni un prefixe trop large.
 
 set -uo pipefail
 
@@ -24,20 +31,17 @@ set -uo pipefail
 
 blocker_require_root
 
-if ! command -v nft >/dev/null 2>&1 || ! command -v dig >/dev/null 2>&1; then
-    blocker_err "$(m "nft et dig sont requis (paquets" "nft and dig are required (packages") nftables, $(blocker_pkg_pour_role dig))"
+if ! command -v nft >/dev/null 2>&1; then
+    blocker_err "$(m "nft est requis (paquet nftables)" "nft is required (nftables package)")"
     exit 1
 fi
 
-if ! nft list table inet blocker_adulte >/dev/null 2>&1; then
-    blocker_warn "$(m "table inet blocker_adulte absente, rien a rafraichir" \
-                  "table inet blocker_adulte missing, nothing to refresh")"
-    exit 0
-fi
+SORTIE="${BLOCKER_NFTDIR}/doh.nft"
+WORK="$(mktemp -d)"
+trap 'rm -rf "${WORK}"' EXIT
 
 # Noms d'hote des principaux resolveurs DoH publics. Ce sont des NOMS, pas des
-# adresses : c'est tout l'interet, ils restent valables quand les adresses
-# derriere changent.
+# adresses : ils restent valables quand les adresses derriere changent.
 hotes_doh() {
     cat <<'EOF'
 dns.google
@@ -69,66 +73,132 @@ odoh.cloudflare-dns.com
 EOF
 }
 
+# La resolution passe par l'amont, sous l'identite du resolveur : notre propre
+# resolveur bloque justement ces noms et ne renverrait que des 0.0.0.0.
 resoudre_hors_filtre() {
-    local nom="$1" type="$2" sortie=""
-
-    if command -v runuser >/dev/null 2>&1 && getent passwd "${BLOCKER_USER}" >/dev/null 2>&1; then
-        sortie="$(runuser -u "${BLOCKER_USER}" -- \
-            dig +short +time=3 +tries=1 "-t${type}" \
-            "@${BLOCKER_UPSTREAM_1}" "${nom}" 2>/dev/null)"
-    fi
-    [ -n "${sortie}" ] || return 0
-
-    case "${type}" in
-        A)    printf '%s\n' "${sortie}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
-                  | grep -vE '^(0\.0\.0\.0|127\.|10\.|192\.168\.|169\.254\.)' ;;
-        AAAA) printf '%s\n' "${sortie}" | grep -E '^[0-9a-fA-F:]+$' \
-                  | grep -vE '^(::|::1|fe80)' ;;
-    esac
+    local nom="$1" type="$2"
+    command -v dig >/dev/null 2>&1 || return 0
+    command -v runuser >/dev/null 2>&1 || return 0
+    getent passwd "${BLOCKER_USER}" >/dev/null 2>&1 || return 0
+    runuser -u "${BLOCKER_USER}" -- \
+        dig +short +time=3 +tries=1 "-t${type}" "@${BLOCKER_UPSTREAM_1}" "${nom}" 2>/dev/null
 }
 
-ajoutes_v4=0
-ajoutes_v6=0
-hotes_resolus=0
+# Le fichier garde, en commentaire, les adresses de chaque source : c'est ce qui
+# permet de reprendre la version precedente d'une source qui echoue. Les
+# adresses elles-memes sont chargees par UNE seule commande par famille, qui en
+# fait l'union : deux « add element » qui se recouvrent dans la meme
+# transaction font echouer nft sur un jeu en « auto-merge ».
+anciennes_adresses() {
+    awk -v src="$1" '
+        /^# source: / { dedans = ($3 == src); next }
+        dedans && /^#= / { sub(/^#= /, ""); n = split($0, a, " "); for (i = 1; i <= n; i++) print a[i] }
+    ' "${SORTIE}" 2>/dev/null
+}
 
+ecrire_bloc() {
+    local src="$1" fichier="$2"
+    printf '# source: %s %s\n' "${src}" "$(wc -l < "${fichier}")"
+    printf '#= %s\n' "$(tr '\n' ' ' < "${fichier}" | sed 's/ $//')"
+    cat "${fichier}" >> "${WORK}/union"
+    return 0
+}
+
+ecrire_union() {
+    local v4 v6
+    LC_ALL=C sort -u "${WORK}/union" -o "${WORK}/union"
+    v4="$(grep -v ':' "${WORK}/union" | paste -sd, - | sed 's/,/, /g')"
+    v6="$(grep ':' "${WORK}/union" | paste -sd, - | sed 's/,/, /g')"
+    [ -n "${v4}" ] && printf 'add element inet blocker_adulte doh_ipv4 { %s }\n' "${v4}"
+    [ -n "${v6}" ] && printf 'add element inet blocker_adulte doh_ipv6 { %s }\n' "${v6}"
+    return 0
+}
+
+CANDIDAT="${WORK}/doh.nft"
+: > "${WORK}/union"
+{
+    printf '# blocker-adulte — adresses des resolveurs DoH (genere)\n'
+    printf '# Genere le %s par /usr/lib/blocker-adulte/blocker-doh-refresh\n' "$(date -Is)"
+    printf '# Charge avec les regles par blocker-apply-nftables. Ne pas modifier a la main.\n'
+} > "${CANDIDAT}"
+
+total=0
+
+# --- 1. Listes communautaires ----------------------------------------------
+n=0
+while IFS= read -r url; do
+    [ -n "${url}" ] || continue
+    case "${url}" in https://*) ;; *) blocker_warn "$(m "URL ignoree (https requis)" "URL skipped (https required)") : ${url}"; continue ;; esac
+    n=$((n + 1))
+    brut="${WORK}/brut-${n}"
+    liste="${WORK}/liste-${n}"
+    : > "${liste}"
+    if curl --fail --silent --show-error --location \
+            --connect-timeout 20 --max-time 300 --speed-limit 512 --speed-time 60 \
+            --retry 2 --retry-delay 5 --user-agent "blocker-adulte/1.0" \
+            --output "${brut}" "${url}"; then
+        { blocker_filtrer_ip 4 < "${brut}"; blocker_filtrer_ip 6 < "${brut}"; } \
+            | LC_ALL=C sort -u > "${liste}"
+    fi
+    nouveau="$(wc -l < "${liste}")"
+    ancien="$(anciennes_adresses "${url}" | wc -l)"
+
+    if [ "${nouveau}" -lt 10 ] || [ "${nouveau}" -lt $((ancien / 2)) ]; then
+        if [ "${ancien}" -gt 0 ]; then
+            blocker_warn "$(m "liste DoH en echec ou nettement plus petite" "DoH list failed or much smaller") (${nouveau} / ${ancien}), $(m "version precedente conservee" "previous version kept") : ${url}"
+            anciennes_adresses "${url}" > "${liste}"
+        else
+            blocker_warn "$(m "liste DoH inutilisable, ignoree" "DoH list unusable, skipped") (${nouveau}) : ${url}"
+            continue
+        fi
+    fi
+    ecrire_bloc "${url}" "${liste}" >> "${CANDIDAT}"
+    total=$((total + $(wc -l < "${liste}")))
+done < <(blocker_mots "${BLOCKER_DOH_IP_URLS:-}")
+
+# --- 2. Noms des resolveurs connus -----------------------------------------
+noms="${WORK}/noms"
 while IFS= read -r hote; do
     [ -n "${hote}" ] || continue
-    trouve=0
-
-    while IFS= read -r ip; do
-        [ -n "${ip}" ] || continue
-        # « add element » est idempotent : une adresse deja presente n'est pas
-        # dupliquee et ne provoque pas d'erreur.
-        if nft add element inet blocker_adulte doh_ipv4 "{ ${ip} }" 2>/dev/null; then
-            ajoutes_v4=$((ajoutes_v4 + 1)); trouve=1
-        fi
-    done < <(resoudre_hors_filtre "${hote}" A)
-
-    while IFS= read -r ip; do
-        [ -n "${ip}" ] || continue
-        if nft add element inet blocker_adulte doh_ipv6 "{ ${ip} }" 2>/dev/null; then
-            ajoutes_v6=$((ajoutes_v6 + 1)); trouve=1
-        fi
-    done < <(resoudre_hors_filtre "${hote}" AAAA)
-
-    [ "${trouve}" -eq 1 ] && hotes_resolus=$((hotes_resolus + 1))
-done < <(hotes_doh)
-
-if [ "${hotes_resolus}" -eq 0 ]; then
-    blocker_warn "$(m "rafraichissement DoH : aucun hote resolu (machine hors ligne ?)" \
-                  "DoH refresh: no host resolved (machine offline?)")"
-    blocker_info "$(m "les adresses ecrites en dur dans le jeu de regles restent actives" \
-                  "the addresses hard-coded in the ruleset stay active")"
-    exit 0
+    resoudre_hors_filtre "${hote}" A
+    resoudre_hors_filtre "${hote}" AAAA
+done < <(hotes_doh) > "${WORK}/noms-brut"
+{ blocker_filtrer_ip 4 < "${WORK}/noms-brut"; blocker_filtrer_ip 6 < "${WORK}/noms-brut"; } \
+    | LC_ALL=C sort -u > "${noms}"
+if [ ! -s "${noms}" ]; then
+    anciennes_adresses noms-resolus > "${noms}"
+    [ -s "${noms}" ] && blocker_warn "$(m "aucun nom DoH resolu (hors ligne ?), adresses precedentes conservees" \
+                                         "no DoH name resolved (offline?), previous addresses kept")"
+fi
+if [ -s "${noms}" ]; then
+    ecrire_bloc noms-resolus "${noms}" >> "${CANDIDAT}"
+    total=$((total + $(wc -l < "${noms}")))
 fi
 
-total_v4="$(nft list set inet blocker_adulte doh_ipv4 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u | wc -l)"
-total_v6="$(nft list set inet blocker_adulte doh_ipv6 2>/dev/null | grep -cE '[0-9a-fA-F]{1,4}:')"
+if [ "${total}" -eq 0 ]; then
+    blocker_warn "$(m "aucune adresse DoH obtenue : le fichier en place est conserve" \
+                      "no DoH address obtained: the file in place is kept")"
+    exit 0
+fi
+ecrire_union >> "${CANDIDAT}"
 
-blocker_info "$(m "rafraichissement DoH" "DoH refresh") : ${hotes_resolus} $(m "hotes resolus" "hosts resolved"), ${total_v4} $(m "adresses IPv4 et" "IPv4 addresses and") ~${total_v6} $(m "lignes IPv6" "IPv6 lines")"
+# --- Validation avant mise en place -----------------------------------------
+# Un « add element » refuse par le noyau ferait echouer tout le fichier. On le
+# charge d'abord, avec les regles, dans un espace reseau jetable.
+if command -v unshare >/dev/null 2>&1 && [ -r /etc/nftables/blocker-adulte.nft ]; then
+    if unshare -n sh -c "nft -f /etc/nftables/blocker-adulte.nft" >/dev/null 2>&1; then
+        if ! unshare -n sh -c "nft -f /etc/nftables/blocker-adulte.nft && nft -f '${CANDIDAT}'" >/dev/null 2>&1; then
+            blocker_err "$(m "le fichier d'adresses DoH genere est refuse par nft, mise en place abandonnee" \
+                             "the generated DoH address file is rejected by nft, install aborted")"
+            exit 1
+        fi
+    fi
+fi
 
-# Note volontaire : les ajouts vivent dans le noyau, pas dans le fichier. Un
-# rechargement complet (« nft -f ») repart de la liste ecrite en dur, et ce
-# script est rejoue a la mise a jour suivante. C'est ce qui evite qu'un fichier
-# edite a la main et le noyau divergent sans que personne ne s'en apercoive.
+blocker_publier "${CANDIDAT}" "${SORTIE}" || exit 1
+blocker_info "$(m "adresses DoH" "DoH addresses") : ${total} $(m "dans" "in") ${SORTIE}"
+
+# Rechargement si le jeu actif ne correspond plus aux fichiers.
+/usr/lib/blocker-adulte/blocker-apply-nftables >/dev/null 2>&1 || \
+    blocker_warn "$(m "rechargement des regles nftables en echec" "reloading the nftables rules failed")"
 exit 0

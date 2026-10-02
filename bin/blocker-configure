@@ -34,9 +34,10 @@ if ! getent passwd "${BLOCKER_USER}" >/dev/null 2>&1; then
     fi
 fi
 
-install -d -m 0755 "${BLOCKER_STATEDIR}"
-install -d -m 0755 "${BLOCKER_STATEDIR}/blocklists"
-install -d -m 0755 "${BLOCKER_CONFDIR}"
+install -d -m 0755 "${BLOCKER_STATEDIR}" "${BLOCKER_STATEDIR}/conf" "${BLOCKER_NFTDIR}" \
+                   "${BLOCKER_DELAIDIR}" "${BLOCKER_RAPPORTDIR}" "${BLOCKER_CONFDIR}"
+blocker_unlock_dir "${BLOCKER_LISTDIR}"
+install -d -m 0755 "${BLOCKER_LISTDIR}"
 install -d -m 0755 -o "${BLOCKER_USER}" -g "${BLOCKER_USER}" "${BLOCKER_RUNDIR}"
 
 # Le drapeau de retrait volontaire ne doit pas survivre a une reinstallation.
@@ -50,15 +51,31 @@ if [ ! -e "${BLOCKER_CONF}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. Liste de blocage de base
+# 0 bis. Configuration en vigueur et fichiers d'etat
+# ---------------------------------------------------------------------------
+# A la premiere installation (ou a la premiere mise a jour vers une version
+# avec delai), le fichier de /etc est approuve tel quel et les fichiers d'etat
+# deja en place sont adoptes. Ensuite, une reinstallation ne reapprouve RIEN :
+# blocker-update ne doit pas devenir un raccourci autour du delai.
+step "$(m "configuration en vigueur" "configuration in force")"
+blocker_adopter_etat
+# La configuration en vigueur vient peut-etre d'etre posee : on la relit.
+# shellcheck disable=SC1090
+[ -r "${BLOCKER_CONF_EN_VIGUEUR}" ] && . "${BLOCKER_CONF_EN_VIGUEUR}"
+
+# ---------------------------------------------------------------------------
+# 1. Liste de blocage de base et categories
 # ---------------------------------------------------------------------------
 step "$(m "liste de blocage" "blocklist")"
-if [ ! -s "${BLOCKER_STATEDIR}/blocklists/00-base.conf" ]; then
-    install -m 0644 "${BLOCKER_SHAREDIR}/blocklists/00-base.conf" \
-                    "${BLOCKER_STATEDIR}/blocklists/00-base.conf"
-    blocker_info "$(m "liste de blocage de base installee (fonctionne hors ligne)" \
-                  "base blocklist installed (works offline)")"
-fi
+blocker_publier "${BLOCKER_SHAREDIR}/blocklists/00-base.conf" \
+                "${BLOCKER_LISTDIR}/00-base.conf" && \
+    blocker_info "$(m "liste de blocage de base en place (fonctionne hors ligne)" \
+                      "base blocklist in place (works offline)")"
+/usr/lib/blocker-adulte/blocker-categories
+case "$?" in
+    0|3) ;;
+    *) blocker_warn "$(m "generation des categories en echec" "generating the categories failed")" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # 1 bis. Resolveurs amont, generes depuis blocker.conf
@@ -122,8 +139,10 @@ step "$(m "policies navigateur" "browser policies")"
 # ---------------------------------------------------------------------------
 step "$(m "regles auditd" "auditd rules")"
 if [ -d /etc/audit/rules.d ]; then
-    install -m 0640 "${BLOCKER_SHAREDIR}/conf/audit-blocker-adulte.rules" \
-                    /etc/audit/rules.d/blocker-adulte.rules
+    # Les lignes visant un chemin absent sont mises en commentaire : sans cela
+    # « auditctl -R » s'arreterait sur la premiere et ignorerait les suivantes.
+    blocker_regles_audit > /etc/audit/rules.d/blocker-adulte.rules
+    chmod 0640 /etc/audit/rules.d/blocker-adulte.rules
     if command -v augenrules >/dev/null 2>&1; then
         augenrules --load >/dev/null 2>&1 || \
             blocker_warn "$(m "augenrules --load a echoue (auditd est-il demarre ?)" "augenrules --load failed (is auditd running?)")"
@@ -249,6 +268,8 @@ systemctl enable --now blocker-selfheal.timer || \
     blocker_warn "blocker-selfheal.timer $(m "non arme" "not armed")"
 systemctl enable --now blocker-list-update.timer || \
     blocker_warn "blocker-list-update.timer $(m "non arme" "not armed")"
+systemctl enable --now blocker-rapport.timer || \
+    blocker_warn "blocker-rapport.timer $(m "non arme" "not armed")"
 
 # Composant 5, volet portable : surveillance directe des repertoires de
 # policies. Elle couvre les navigateurs installes par snap ou flatpak, que le
@@ -275,7 +296,14 @@ step "$(m "regles nftables" "nftables rules")"
 
 step "$(m "immuabilite des fichiers proteges" "immutability of the protected files")"
 blocker_lock_all
+blocker_lock_dir "${BLOCKER_LISTDIR}"
 
-blocker_info "$(m "configuration terminee. Etat" "configuration finished. Status") : systemctl status blocker-guard blocker-resolver"
-blocker_info "$(m "desinstallation en quatre phases" "uninstall in four phases") : blocker-uninstall --etat"
+if [ -z "${BLOCKER_RAPPORT_DESTINATAIRE:-}" ]; then
+    blocker_warn "$(m "aucune personne de confiance ne recoit le rapport hebdomadaire :" \
+                      "no trusted person receives the weekly report:")"
+    blocker_warn "  $(m "renseigner BLOCKER_RAPPORT_DESTINATAIRE dans" "set BLOCKER_RAPPORT_DESTINATAIRE in") ${BLOCKER_CONF}"
+fi
+
+blocker_info "$(m "configuration terminee. Etat" "configuration finished. Status") : blocker-status"
+blocker_info "$(m "ce qui affaiblit la protection attend" "whatever weakens the protection waits") ${BLOCKER_DELAI_HEURES} h : blocker-delai"
 exit 0

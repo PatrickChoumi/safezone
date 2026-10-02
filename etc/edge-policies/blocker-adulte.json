@@ -1,30 +1,27 @@
 {
-  "_comment": "blocker-adulte - policy Brave (composant 3). Deployee dans /etc/brave/policies/managed/blocker-adulte.json. Reprend les policies Chromium et y ajoute les specificites Brave (Tor, VPN integre) qui contourneraient sinon entierement le resolveur local.",
+  "_comment": "blocker-adulte - policy Microsoft Edge (composant 3). Deployee dans /etc/opt/edge/policies/managed/blocker-adulte.json. Edge nomme la navigation privee InPrivate et force le mode strict de Bing par ForceBingSafeSearch. Verifier dans edge://policy.",
   "DnsOverHttpsMode": "off",
   "DnsOverHttpsTemplates": "",
   "BuiltInDnsClientEnabled": false,
   "QuicAllowed": false,
-  "IncognitoModeAvailability": 1,
+  "InPrivateModeAvailability": 1,
   "BrowserGuestModeEnabled": false,
   "SafeSitesFilterBehavior": 1,
   "ForceGoogleSafeSearch": true,
+  "ForceBingSafeSearch": 2,
   "ForceYouTubeRestrict": 2,
   "ProxySettings": {
     "ProxyMode": "direct"
   },
   "URLBlocklist": [
+    "edge://flags",
+    "edge://net-internals",
+    "edge://net-export",
     "chrome://flags",
-    "brave://flags",
     "chrome://net-internals",
-    "brave://net-internals",
-    "chrome://net-export",
-    "brave://net-export"
+    "chrome://net-export"
   ],
   "URLAllowlist": [],
-  "TorDisabled": true,
-  "BraveVPNDisabled": 1,
-  "BraveRewardsDisabled": true,
-  "BraveWalletDisabled": true,
   "BackgroundModeEnabled": false,
   "ExtensionSettings": {
     "*": {

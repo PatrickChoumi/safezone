@@ -15,8 +15,8 @@
 #   - le paquet .deb (« make deb » puis « apt install ./blocker-adulte_*.deb »),
 #     dont le postinst appelle exactement le meme blocker-configure.
 #
-# Desinstallation : elle se fait en quatre phases, il n'y a pas de commande
-# unique. Point de depart : sudo blocker-uninstall --etat
+# Desinstallation : une demande, un delai, puis quatre phases ; il n'y a pas de
+# commande unique. Point de depart : sudo blocker-uninstall --etat
 
 set -uo pipefail
 
@@ -243,6 +243,7 @@ etat blocker-guard.service
 etat blocker-selfheal.timer
 etat blocker-list-update.timer
 etat blocker-policies.path
+etat blocker-rapport.timer
 
 printf '\n'
 # La langue est deduite de la locale du systeme, qui n'est pas forcement celle
@@ -263,10 +264,14 @@ printf '%s\n' "$(m "Mettre a jour depuis le depot git :" "Update from the git re
 printf '  sudo blocker-update --verifier   # %s\n' "$(m "voir s il y a du nouveau" "see whether anything is new")"
 printf '  sudo blocker-update              # %s\n' "$(m "relire les changements puis appliquer" "review the changes, then apply")"
 printf '\n'
-printf '%s\n' "$(m "Desinstaller — quatre phases, pas de commande unique :" "Uninstall — four phases, no single command:")"
-printf '  sudo blocker-uninstall --etat      # %s\n' "$(m "ou en est-on" "where we stand")"
-printf '  sudo blocker-uninstall --phase 1   # %s\n' "$(m "commencer" "start")"
-printf '  sudo blocker-uninstall --manuel    # %s\n' "$(m "procedure manuelle equivalente" "equivalent manual procedure")"
+printf '%s\n' "$(m "Personne de confiance — rapport hebdomadaire (recommande) :" "Trusted person — weekly report (recommended):")"
+printf '  sudo nano /etc/blocker-adulte/blocker.conf   # BLOCKER_RAPPORT_DESTINATAIRE\n'
+printf '  sudo blocker-delai                           # %s\n' "$(m "appliquer" "apply")"
+printf '\n'
+printf '%s\n' "$(m "Ce qui affaiblit la protection attend un delai (48 h) :" "Whatever weakens the protection waits for a delay (48 h):")"
+printf '  sudo blocker-delai                  # %s\n' "$(m "demandes en cours" "pending requests")"
+printf '  sudo blocker-uninstall --demander   # %s\n' "$(m "desinstallation : la demande, puis le delai" "uninstall: the request, then the delay")"
+printf '  sudo blocker-uninstall --manuel     # %s\n' "$(m "procedure manuelle equivalente" "equivalent manual procedure")"
 printf '\n'
 
 exit "${rc}"
